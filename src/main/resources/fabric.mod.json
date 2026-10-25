@@ -1,0 +1,26 @@
+{
+	"schemaVersion": 1,
+	"id": "tradeseeker",
+	"version": "${version}",
+	"name": "Trade Seeker",
+	"description": "Re-rolls a librarian for you: breaks and replaces its lectern until it offers the enchanted book you picked, at a price you accept. Client-side only.",
+	"authors": [
+		"PlayWit Creations"
+	],
+	"license": "MIT",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.greysworkshop.tradeseeker.TradeSeekerClient"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.18.0",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	},
+	"mixins": [
+		"tradeseeker.mixins.json"
+	]
+}
