@@ -11,6 +11,7 @@ import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.ItemEnchantmentsComponent;
 import net.minecraft.enchantment.Enchantment;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.ItemEntity;
 import net.minecraft.entity.passive.VillagerEntity;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
@@ -27,6 +28,7 @@ import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -36,7 +38,9 @@ import net.minecraft.village.VillagerProfession;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -46,7 +50,7 @@ import java.util.UUID;
  * A villager's trades only lock once someone trades with it, so it never trades unless told to.
  */
 public final class Reroller {
-	private enum State { OPEN, AWAIT_OFFERS, BREAK, WAIT_JOBLESS, PLACE, CONFIRM_PLACE, WAIT_JOB, BUY }
+	private enum State { OPEN, AWAIT_OFFERS, STEP, BREAK, WAIT_JOBLESS, PLACE, CONFIRM_PLACE, WAIT_JOB, BUY }
 
 	/** One enchanted book a librarian offers. */
 	public record Book(int index, RegistryEntry<Enchantment> enchantment, int level, int price) {
@@ -62,6 +66,13 @@ public final class Reroller {
 	private static long startedAt;
 	private static Book found;
 	private static Set<UUID> neighbours = Set.of();
+	private static boolean stepping;
+	/** Dropped lecterns (entity ids) that landed out of pickup reach this run. */
+	private static Set<Integer> lostDrops = new HashSet<>();
+	/** This run's wanted books; one is crossed off when it's bought, and the rest are sought from the next villager. */
+	private static Map<String, Integer> remaining = new LinkedHashMap<>();
+	/** Villagers this run has finished with (bought from, or found already traded). */
+	private static Set<UUID> done = new HashSet<>();
 	/** What the last roll offered, for the status line. */
 	private static Text lastSeen = Text.empty();
 
@@ -98,24 +109,80 @@ public final class Reroller {
 			chat(player, Text.translatable("tradeseeker.msg.locked").formatted(Formatting.RED));
 			return;
 		}
-		BlockPos pos = findLectern(client, target);
+		BlockPos pos = findLectern(client, target, true);
 		if (pos == null) {
 			chat(player, Text.translatable("tradeseeker.msg.no_lectern").formatted(Formatting.RED));
 			return;
 		}
+		remaining = new LinkedHashMap<>(config.wanted);
+		done = new HashSet<>();
+		lostDrops = new HashSet<>();
+		rolls = 0;
+		startedAt = System.currentTimeMillis();
+		begin(client, target, pos);
+		chat(player, Text.translatable("tradeseeker.msg.started", pos.toShortString()).formatted(Formatting.GREEN));
+		if (!canCatchDrop(player, pos)) chat(player, Text.translatable("tradeseeker.msg.step_closer").formatted(Formatting.YELLOW));
+	}
+
+	/** Whether all of the lectern's spot is within item pickup reach, so the broken lectern comes back to you. */
+	private static boolean canCatchDrop(ClientPlayerEntity player, BlockPos pos) {
+		Box reach = player.getBoundingBox().expand(1, 0.5, 1);
+		// A broken block's drop appears within a quarter block of the middle.
+		Box spot = new Box(pos).contract(0.25);
+		return reach.minX <= spot.minX && reach.maxX >= spot.maxX && reach.minZ <= spot.minZ && reach.maxZ >= spot.maxZ
+				&& reach.minY <= spot.minY + 0.5;
+	}
+
+	private static void begin(MinecraftClient client, VillagerEntity target, BlockPos pos) {
 		villager = target;
 		lectern = pos;
-		rolls = 0;
 		found = null;
 		lastSeen = Text.empty();
-		startedAt = System.currentTimeMillis();
 		neighbours = joblessNeighbours(client);
 		enter(isLibrarian(target) ? State.OPEN : State.WAIT_JOB);
-		chat(player, Text.translatable("tradeseeker.msg.started", pos.toShortString()).formatted(Formatting.GREEN));
+	}
+
+	/**
+	 * Moves on to the nearest villager in reach that this run hasn't finished with, as in a trading hall.
+	 * Returns false when there's none.
+	 */
+	private static boolean nextVillager(MinecraftClient client) {
+		ClientPlayerEntity player = client.player;
+		VillagerEntity best = null;
+		BlockPos bestLectern = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (Entity entity : client.world.getEntities()) {
+			if (!(entity instanceof VillagerEntity v) || v.isBaby() || done.contains(v.getUuid())) continue;
+			if ((!isLibrarian(v) && !isJobless(v)) || v.getVillagerData().level() > 1 || !player.canInteractWithEntity(v, 0.5)) continue;
+			BlockPos pos = findLectern(client, v, false);
+			double d = v.squaredDistanceTo(player);
+			if (pos != null && d < bestDistance) {
+				best = v;
+				bestLectern = pos;
+				bestDistance = d;
+			}
+		}
+		if (best == null) return false;
+		begin(client, best, bestLectern);
+		return true;
+	}
+
+	private static Text remainingText() {
+		var text = Text.empty();
+		var registry = MinecraftClient.getInstance().world.getRegistryManager().getOrThrow(net.minecraft.registry.RegistryKeys.ENCHANTMENT);
+		boolean first = true;
+		for (var e : remaining.entrySet()) {
+			if (!first) text.append(", ");
+			first = false;
+			var entry = registry.getEntry(net.minecraft.util.Identifier.of(e.getKey()));
+			text.append(entry.isPresent() ? Enchantment.getName(entry.get(), e.getValue()) : Text.literal(e.getKey()));
+		}
+		return text;
 	}
 
 	public static void stop(MinecraftClient client, Text why) {
 		if (state == null) return;
+		releaseKeys(client);
 		if (client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
 		state = null;
 		villager = null;
@@ -162,6 +229,7 @@ public final class Reroller {
 		switch (state) {
 			case OPEN -> open(client, player);
 			case AWAIT_OFFERS -> awaitOffers(client, player);
+			case STEP -> step(client, player);
 			case BREAK -> breakLectern(client, player);
 			case WAIT_JOBLESS -> waitJobless(client, player);
 			case PLACE -> place(client, player);
@@ -208,12 +276,19 @@ public final class Reroller {
 	private static void check(MinecraftClient client, ClientPlayerEntity player, MerchantScreen screen) {
 		MerchantScreenHandler handler = screen.getScreenHandler();
 		if (handler.getExperience() > 0 || villager.getVillagerData().level() > 1) {
+			// Partway through a hall, a traded villager is just skipped.
+			if (!done.isEmpty()) {
+				done.add(villager.getUuid());
+				player.closeHandledScreen();
+				if (nextVillager(client)) return;
+			}
 			fail(client, "tradeseeker.msg.locked");
 			return;
 		}
 		List<Book> books = books(handler.getRecipes());
 		Book match = firstWanted(books);
 		lastSeen = describeAll(books);
+		TradeSeekerClient.LOGGER.info("Re-roll {}: {}", rolls, lastSeen.getString());
 		if (match != null) {
 			found(client, player, screen, match);
 			return;
@@ -226,7 +301,7 @@ public final class Reroller {
 			return;
 		}
 		status(player, Text.translatable("tradeseeker.status.offer").append(lastSeen.copy().formatted(Formatting.GRAY)));
-		enter(State.BREAK);
+		enter(State.STEP);
 	}
 
 	private static void found(MinecraftClient client, ClientPlayerEntity player, MerchantScreen screen, Book book) {
@@ -255,8 +330,32 @@ public final class Reroller {
 			stop(client, Text.translatable("tradeseeker.msg.cant_afford").formatted(Formatting.YELLOW));
 			return;
 		}
-		client.interactionManager.clickSlot(handler.syncId, 2, 0, SlotActionType.QUICK_MOVE, player);
-		stop(client, Text.translatable("tradeseeker.msg.bought", found.describe()).formatted(Formatting.GREEN));
+		// One plain click takes exactly one (shift-click would buy as many as you can afford), then it goes in a free slot.
+		client.interactionManager.clickSlot(handler.syncId, 2, 0, SlotActionType.PICKUP, player);
+		for (int i = 3; i < handler.slots.size(); i++) {
+			if (!handler.getSlot(i).hasStack()) {
+				client.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.PICKUP, player);
+				break;
+			}
+		}
+		logBought(found);
+		chat(player, Text.translatable("tradeseeker.msg.bought", found.describe()).formatted(Formatting.GREEN));
+		remaining.remove(idOf(found.enchantment()));
+		done.add(villager.getUuid());
+		if (remaining.isEmpty()) {
+			stop(client, Text.translatable("tradeseeker.msg.all_done").formatted(Formatting.GREEN, Formatting.BOLD));
+			return;
+		}
+		player.closeHandledScreen();
+		if (nextVillager(client)) {
+			chat(player, Text.translatable("tradeseeker.msg.next_villager", remainingText()).formatted(Formatting.AQUA));
+		} else {
+			stop(client, Text.translatable("tradeseeker.msg.no_next_villager", remainingText()).formatted(Formatting.YELLOW));
+		}
+	}
+
+	private static void logBought(Book book) {
+		TradeSeekerClient.LOGGER.info("Bought {} for {} emeralds after {} re-rolls", book.describe().getString(), book.price(), rolls);
 	}
 
 	/** Shows the trade as picked and fills the payment slots from the inventory, as clicking it would. Buys nothing. */
@@ -268,6 +367,32 @@ public final class Reroller {
 		handler.setRecipeIndex(index);
 		handler.switchTo(index);
 		client.getNetworkHandler().sendPacket(new SelectMerchantTradeC2SPacket(index));
+	}
+
+	/**
+	 * Before breaking, sneaks up against the lectern if its drop could land out of pickup reach (in a hall, after
+	 * moving on to the next pod). Sneaking can't walk off an edge; walls just stop it, and then it breaks from there.
+	 */
+	private static void step(MinecraftClient client, ClientPlayerEntity player) {
+		if (canCatchDrop(player, lectern) || ticksInState > 60) {
+			releaseKeys(client);
+			enter(State.BREAK);
+			delay = 2;
+			return;
+		}
+		Vec3d d = Vec3d.ofCenter(lectern).subtract(player.getEntityPos());
+		player.setYaw((float) (MathHelper.atan2(d.z, d.x) * MathHelper.DEGREES_PER_RADIAN) - 90);
+		client.options.sneakKey.setPressed(true);
+		client.options.forwardKey.setPressed(true);
+		stepping = true;
+		delay = 0;
+	}
+
+	private static void releaseKeys(MinecraftClient client) {
+		if (!stepping) return;
+		stepping = false;
+		client.options.forwardKey.setPressed(false);
+		client.options.sneakKey.setPressed(false);
 	}
 
 	private static void breakLectern(MinecraftClient client, ClientPlayerEntity player) {
@@ -309,6 +434,12 @@ public final class Reroller {
 			fail(client, "tradeseeker.msg.spot_taken");
 			return;
 		}
+		// A dropped item can't be picked up for its first half second, and placing over it pushes it aside. So wait
+		// while the broken lectern is still flying or about to be picked up; one that landed out of reach is lost.
+		if (ticksInState <= 40 && awaitDrop(client, player)) {
+			status(player, Text.translatable("tradeseeker.status.wait_lectern"));
+			return;
+		}
 		PlayerInventory inventory = player.getInventory();
 		int slot = slotOf(inventory, Items.LECTERN);
 		if (slot < 0) {
@@ -333,6 +464,33 @@ public final class Reroller {
 		player.swingHand(Hand.MAIN_HAND);
 		enter(State.CONFIRM_PLACE);
 		delay = 0;
+	}
+
+	/** Whether a dropped lectern is still on its way to us. Counts (once) the ones that landed out of reach. */
+	private static boolean awaitDrop(MinecraftClient client, ClientPlayerEntity player) {
+		Box around = new Box(lectern).expand(1.5);
+		Box reach = player.getBoundingBox().expand(1, 0.5, 1);
+		boolean coming = false;
+		for (ItemEntity item : client.world.getEntitiesByClass(ItemEntity.class, around, i -> i.getStack().isOf(Items.LECTERN))) {
+			if (item.getItemAge() < 12 || item.getBoundingBox().intersects(reach)) {
+				coming = true;
+			} else if (lostDrops.add(item.getId())) {
+				int spares = count(player.getInventory(), Items.LECTERN);
+				if (lostDrops.size() == 1) chat(player, Text.translatable("tradeseeker.msg.drop_lost", spares).formatted(Formatting.YELLOW));
+				if (spares <= 2) chat(player, Text.translatable("tradeseeker.msg.spares_low", spares).formatted(Formatting.YELLOW));
+			}
+		}
+		return coming;
+	}
+
+	private static int count(PlayerInventory inventory, net.minecraft.item.Item item) {
+		int n = 0;
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) if (inventory.getStack(i).isOf(item)) n += inventory.getStack(i).getCount();
+		return n;
+	}
+
+	public static int lostLecterns() {
+		return lostDrops.size();
 	}
 
 	/** A solid face to put the lectern against: the floor, or else a wall beside or the block above it. */
@@ -409,7 +567,8 @@ public final class Reroller {
 		ModConfig config = ModConfig.INSTANCE;
 		for (Book book : books) {
 			String id = idOf(book.enchantment());
-			if (id != null && config.wants(id, book.level()) && config.priceOk(book.price())) return book;
+			Integer min = remaining.get(id);
+			if (min != null && book.level() >= min && config.priceOk(book.price())) return book;
 		}
 		return null;
 	}
@@ -464,8 +623,8 @@ public final class Reroller {
 	}
 
 	/** The lectern you're looking at, or else the one nearest the villager that you can reach. */
-	private static BlockPos findLectern(MinecraftClient client, VillagerEntity target) {
-		if (client.crosshairTarget instanceof BlockHitResult hit && client.world.getBlockState(hit.getBlockPos()).isOf(Blocks.LECTERN)) {
+	private static BlockPos findLectern(MinecraftClient client, VillagerEntity target, boolean lookedAt) {
+		if (lookedAt && client.crosshairTarget instanceof BlockHitResult hit && client.world.getBlockState(hit.getBlockPos()).isOf(Blocks.LECTERN)) {
 			return hit.getBlockPos();
 		}
 		BlockPos best = null;

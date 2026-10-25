@@ -17,6 +17,7 @@ import net.minecraft.resource.DataConfiguration;
 import net.minecraft.resource.featuretoggle.FeatureFlags;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.village.VillagerProfession;
 import net.minecraft.world.Difficulty;
@@ -34,18 +35,21 @@ import java.util.stream.Stream;
 
 /**
  * Development-only scripted test, run with {@code ./gradlew runSelfTest}. Not included in the release jar.
- * Builds a jobless villager beside a lectern in a survival world and re-rolls it for real.
+ * Builds a two-villager trading hall in a survival world and re-rolls it for real, ending with Mending and Unbreaking III.
  */
 final class SelfTest {
 	private static final String WORLD = "ts-selftest";
+	/** The two pods' z positions. */
+	private static final int[] PODS = {0, 2};
 	/** Common books, so a match turns up within a few rolls. */
-	private static final String[] WANTED = {"minecraft:protection", "minecraft:sharpness", "minecraft:efficiency",
+	private static final String[] COMMON = {"minecraft:protection", "minecraft:sharpness", "minecraft:efficiency",
 			"minecraft:unbreaking", "minecraft:power", "minecraft:fire_protection", "minecraft:smite", "minecraft:bane_of_arthropods"};
 
 	private static boolean started;
 	private static int tick = -1, phaseStart, passed, failed;
 	private static String phase = "setup";
-	private static Reroller.Book book;
+	private static boolean escaped;
+	private static long hallStart;
 
 	private SelfTest() {}
 
@@ -81,6 +85,7 @@ final class SelfTest {
 		if (client.player == null || client.world == null || client.getServer() == null) return;
 		tick++;
 		if (tick % 2000 == 0) command(client, "time set 1000");
+		if (tick > 100) watchForEscape(client);
 		int since = tick - phaseStart;
 		switch (phase) {
 			case "setup" -> {
@@ -88,7 +93,7 @@ final class SelfTest {
 				if (tick == 140) {
 					ModConfig config = ModConfig.INSTANCE;
 					config.wanted.clear();
-					for (String id : WANTED) config.wanted.put(id, 1);
+					for (String id : COMMON) config.wanted.put(id, 1);
 					config.autoBuy = false;
 					config.minPrice = 1;
 					config.maxPrice = 64;
@@ -99,89 +104,88 @@ final class SelfTest {
 				if (tick == 170) {
 					client.setScreen(null);
 					// First a book no librarian sells (level 9), with a limit of 3: the loop must re-roll exactly 3 times.
-					ModConfig.INSTANCE.wanted.clear();
-					ModConfig.INSTANCE.wanted.put("minecraft:protection", 9);
+					want("minecraft:protection", 9);
 					ModConfig.INSTANCE.maxRolls = 3;
-					aimAtVillager(client);
+					aimAt(client, villager(client, 0));
 					Reroller.start(client);
-					check("re-rolling starts with the villager in its pod", Reroller.running() && Reroller.target() == villager(client));
+					check("re-rolling starts on the villager you look at", Reroller.running() && Reroller.target() == villager(client, 0));
 					next("limit");
 				}
 			}
 			case "limit" -> {
-				if (since % 200 == 0) log("rolls=" + Reroller.rolls() + " state=" + Reroller.stateName());
 				if (Reroller.running() && since < 6000) return;
-				VillagerEntity v = villager(client);
+				VillagerEntity v = villager(client, 0);
 				check("it stops at the re-roll limit (" + Reroller.rolls() + " of 3)", !Reroller.running() && Reroller.rolls() == 3);
-				check("the lectern is back and the villager is a librarian again", client.world.getBlockState(LECTERN).isOf(Blocks.LECTERN)
-						&& v != null && v.getVillagerData().profession().matchesKey(VillagerProfession.LIBRARIAN));
-				check("nothing was bought while re-rolling", serverVillagerXp(client) == 0 && !hasBook(client, null));
+				check("the lectern is back and the villager is a librarian again", client.world.getBlockState(lectern(0)).isOf(Blocks.LECTERN)
+						&& v != null && isLibrarian(v));
+				check("nothing was bought while re-rolling", xp(client, 0) == 0 && !hasBook(client, null, 1));
+				check("the broken lectern is picked back up each time (" + lecterns(client) + " of 4 spares left)", lecterns(client) == 4);
 				ModConfig.INSTANCE.wanted.clear();
-				for (String id : WANTED) ModConfig.INSTANCE.wanted.put(id, 1);
+				for (String id : COMMON) ModConfig.INSTANCE.wanted.put(id, 1);
 				ModConfig.INSTANCE.maxRolls = 0;
-				aimAtVillager(client);
+				aimAt(client, villager(client, 0));
 				Reroller.start(client);
 				next("rolling");
 			}
 			case "rolling" -> {
-				if (since % 200 == 0) log("rolls=" + Reroller.rolls() + " state=" + Reroller.stateName());
-				if (Reroller.running()) {
-					if (since > 9000) {
-						check("a wanted book turns up within 7.5 minutes (" + Reroller.rolls() + " rolls)", false);
-						finish(client);
-					}
-					return;
-				}
-				book = Reroller.lastFound();
-				check("a wanted book is found (" + Reroller.rolls() + " rolls, " + (book == null ? "none" : book.describe().getString()) + ")",
-						book != null && ModConfig.INSTANCE.wants(Reroller.idOf(book.enchantment()), book.level()));
+				if (Reroller.running() && since < 9000) return;
+				Reroller.Book book = Reroller.lastFound();
+				check("a common book is found (" + (book == null ? "none" : book.describe().getString()) + ")", !Reroller.running() && book != null);
 				check("with auto-buy off, the trade screen is left open for you", client.currentScreen instanceof MerchantScreen);
 				next("decide");
 			}
 			case "decide" -> {
 				if (since == 10) screenshot(client, "2_found_trade_open");
 				if (since == 20) {
-					check("with auto-buy off, nothing is bought", serverVillagerXp(client) == 0 && !hasBook(client, null));
+					check("with auto-buy off, nothing is bought", xp(client, 0) == 0 && !hasBook(client, null, 1));
 					if (client.currentScreen instanceof MerchantScreen ms) {
-						check("the found trade is selected and its payment filled in",
-								!ms.getScreenHandler().getSlot(2).getStack().isEmpty());
+						check("the found trade is selected and its payment filled in", !ms.getScreenHandler().getSlot(2).getStack().isEmpty());
 					}
 					client.player.closeHandledScreen();
 				}
 				if (since == 40) {
-					if (book == null) {
-						finish(client);
-						return;
-					}
-					// Ask for exactly what it has now, so the next start finds it at once and buys it.
+					// The real job: Mending and Unbreaking III at any price, from a two-villager hall, in one go.
 					ModConfig.INSTANCE.wanted.clear();
-					ModConfig.INSTANCE.wanted.put(Reroller.idOf(book.enchantment()), book.level());
+					ModConfig.INSTANCE.wanted.put("minecraft:mending", 1);
+					ModConfig.INSTANCE.wanted.put("minecraft:unbreaking", 3);
+					ModConfig.INSTANCE.minPrice = 1;
+					ModConfig.INSTANCE.maxPrice = 64;
 					ModConfig.INSTANCE.autoBuy = true;
-					aimAtVillager(client);
+					aimAt(client, villager(client, 0));
 					Reroller.start(client);
-					next("autobuy");
+					hallStart = System.currentTimeMillis();
+					next("hall");
 				}
 			}
-			case "autobuy" -> {
-				if (Reroller.running() && since < 400) return;
-				if (since == 400) check("auto-buy finishes", false);
-				check("auto-buy buys the book", hasBook(client, Reroller.idOf(book.enchantment())));
-				next("locked");
+			case "hall" -> {
+				if (since % 1200 == 0) log("hall: " + Reroller.rolls() + " re-rolls, " + (System.currentTimeMillis() - hallStart) / 1000 + " s, state "
+						+ Reroller.stateName() + ", villager " + (Reroller.target() == villager(client, 0) ? "A" : "B"));
+				if (Reroller.running() && since < 20 * 60 * 90) return;
+				long seconds = (System.currentTimeMillis() - hallStart) / 1000;
+				log("hall finished after " + Reroller.rolls() + " re-rolls in " + seconds / 60 + "m " + seconds % 60 + "s");
+				next("hall_check");
 			}
-			case "locked" -> {
-				if (since == 10) screenshot(client, "3_bought");
+			case "hall_check" -> {
+				if (since == 10) screenshot(client, "3_hall_done");
 				if (since == 20) {
-					check("the villager has traded (" + serverVillagerXp(client) + " xp)", serverVillagerXp(client) > 0);
-					client.player.closeHandledScreen();
+					if (client.currentScreen != null) client.player.closeHandledScreen();
+					check("bought exactly one Mending book (" + books(client, "minecraft:mending", 1) + ")", books(client, "minecraft:mending", 1) == 1);
+					check("bought exactly one Unbreaking III book (" + books(client, "minecraft:unbreaking", 3) + ")",
+							books(client, "minecraft:unbreaking", 3) == 1);
+					check("nothing else was bought (" + books(client, null, 1) + " books)", books(client, null, 1) == 2);
+					check("both villagers were traded with (" + xp(client, 0) + ", " + xp(client, 2) + " xp)", xp(client, 0) > 0 && xp(client, 2) > 0);
+					check("neither villager escaped its pod", !escaped && villager(client, 0) != null && villager(client, 2) != null);
+					// With the trapdoor, a lectern is rarely lost (about 1 in 50 re-rolls); without it, about 1 in 2.
+					int used = 4 - lecterns(client);
+					check("lecterns are hardly ever lost (" + used + " used in " + Reroller.rolls() + " re-rolls)", used * 20 <= Math.max(Reroller.rolls(), 20));
 				}
-				if (since == 40) {
-					aimAtVillager(client);
+				if (since == 30) {
+					aimAt(client, villager(client, 0));
+					ModConfig.INSTANCE.wanted.put("minecraft:protection", 1);
 					Reroller.start(client);
 				}
-				if (since == 60) {
+				if (since == 50) {
 					check("a traded librarian is refused (its trades are locked)", !Reroller.running());
-					check("the next-door villager and its lectern are left alone", client.world.getBlockState(LECTERN.south(3)).isOf(Blocks.LECTERN)
-							&& neighbour(client) != null && neighbour(client).getVillagerData().profession().matchesKey(VillagerProfession.LIBRARIAN));
 					ModConfig.save();
 					ModConfig before = ModConfig.INSTANCE;
 					ModConfig.INSTANCE = new ModConfig();
@@ -195,62 +199,104 @@ final class SelfTest {
 		}
 	}
 
+	private static void want(String id, int level) {
+		ModConfig.INSTANCE.wanted.clear();
+		ModConfig.INSTANCE.wanted.put(id, level);
+	}
+
+	/**
+	 * A trading hall: two pods side by side, sharing a wall, facing an aisle at x=0. Each villager stands in a 1x1 glass
+	 * cell with its lectern in front and glass above the lectern: with the lectern broken the gap is 1 high, so the
+	 * villager can't get out. An open trapdoor across the pod's front keeps the drop from flying in.
+	 * The player stands in the aisle between the two pods.
+	 */
 	private static void build(MinecraftClient client) {
-		log("Building the test bench");
+		log("Building the trading hall");
 		command(client, "kill @e[type=!player]");
-		command(client, "tp @a 0.5 -60 0.5 -90 20");
 		command(client, "fill -3 -61 -3 5 -61 6 minecraft:stone");
-		command(client, "fill -3 -60 -3 5 -57 6 minecraft:air");
-		// Two trading-hall pods side by side: each villager in a 1x1 glass cell with its lectern in front, facing the aisle.
-		for (int z : new int[] {0, 3}) {
+		command(client, "fill -3 -60 -3 5 -56 6 minecraft:air");
+		for (int z : PODS) {
 			command(client, "fill 1 -60 " + (z - 1) + " 3 -58 " + (z + 1) + " minecraft:glass");
-			command(client, "fill 1 -60 " + z + " 2 -59 " + z + " minecraft:air");
+			command(client, "fill 2 -60 " + z + " 2 -59 " + z + " minecraft:air");
+			// An open iron trapdoor across the front of the pod: drops from the lectern bounce off it instead of landing
+			// at the villager's feet.
+			command(client, "setblock 2 -60 " + z + " minecraft:iron_trapdoor[open=true,facing=east]");
 			command(client, "setblock 1 -60 " + z + " minecraft:lectern");
-			command(client, "summon minecraft:villager 2.5 -60 " + (z + 0.5) + " {VillagerData:{profession:\"minecraft:none\",level:1,type:\"minecraft:plains\"}}");
+			command(client, "summon minecraft:villager 2.7 -60 " + (z + 0.5) + " {VillagerData:{profession:\"minecraft:none\",level:1,type:\"minecraft:plains\"}}");
 		}
+		// Right up against the lecterns (x=1), as you would stand to catch the drop.
+		command(client, "tp @a 0.69 -60 1 -90 20");
 		command(client, "clear @a");
 		command(client, "give @a minecraft:diamond_axe");
-		command(client, "give @a minecraft:emerald 64");
-		command(client, "give @a minecraft:book 4");
+		command(client, "give @a minecraft:emerald 192");
+		command(client, "give @a minecraft:book 8");
+		command(client, "give @a minecraft:lectern 4");
 		command(client, "time set 1000");
 	}
 
-	private static final BlockPos LECTERN = new BlockPos(1, -60, 0);
+	private static void watchForEscape(MinecraftClient client) {
+		for (Entity e : client.world.getEntities()) {
+			if (!(e instanceof VillagerEntity v)) continue;
+			int x = MathHelper.floor(v.getX()), z = MathHelper.floor(v.getZ());
+			if (!escaped && (x != 2 || (z != PODS[0] && z != PODS[1]))) {
+				escaped = true;
+				log("A villager got out of its pod, at " + v.getBlockPos().toShortString());
+			}
+		}
+	}
 
-	/** The villager being re-rolled (the pod at z=0). */
-	private static VillagerEntity villager(MinecraftClient client) {
-		for (Entity e : client.world.getEntities()) if (e instanceof VillagerEntity v && v.getZ() < 1.5) return v;
+	private static BlockPos lectern(int pod) {
+		return new BlockPos(1, -60, pod);
+	}
+
+	private static boolean isLibrarian(VillagerEntity v) {
+		return v.getVillagerData().profession().matchesKey(VillagerProfession.LIBRARIAN);
+	}
+
+	/** The villager in the pod at that z. */
+	private static VillagerEntity villager(MinecraftClient client, int pod) {
+		for (Entity e : client.world.getEntities()) if (e instanceof VillagerEntity v && MathHelper.floor(v.getZ()) == pod) return v;
 		return null;
 	}
 
-	private static VillagerEntity neighbour(MinecraftClient client) {
-		for (Entity e : client.world.getEntities()) if (e instanceof VillagerEntity v && v.getZ() > 2.5) return v;
-		return null;
-	}
-
-	private static int serverVillagerXp(MinecraftClient client) {
-		VillagerEntity v = villager(client);
+	private static int xp(MinecraftClient client, int pod) {
+		VillagerEntity v = villager(client, pod);
 		if (v == null) return -1;
 		Entity server = client.getServer().getOverworld().getEntity(v.getUuid());
 		return server instanceof VillagerEntity sv ? sv.getExperience() : -1;
 	}
 
-	/** Whether the player holds an enchanted book (with that enchantment, if given). */
-	private static boolean hasBook(MinecraftClient client, String id) {
+	/** Whether the player holds an enchanted book (with that enchantment at that level or higher, if given). */
+	private static boolean hasBook(MinecraftClient client, String id, int level) {
+		return books(client, id, level) > 0;
+	}
+
+	/** How many such enchanted books the player holds (any book, if no id is given). */
+	private static int books(MinecraftClient client, String id, int level) {
 		var inventory = client.player.getInventory();
+		int n = 0;
 		for (int i = 0; i < inventory.size(); i++) {
 			ItemStack stack = inventory.getStack(i);
 			if (!stack.isOf(Items.ENCHANTED_BOOK)) continue;
-			if (id == null) return true;
-			for (var entry : stack.getOrDefault(DataComponentTypes.STORED_ENCHANTMENTS, ItemEnchantmentsComponent.DEFAULT).getEnchantments()) {
-				if (id.equals(Reroller.idOf(entry))) return true;
+			if (id == null) {
+				n += stack.getCount();
+				continue;
+			}
+			for (var entry : stack.getOrDefault(DataComponentTypes.STORED_ENCHANTMENTS, ItemEnchantmentsComponent.DEFAULT).getEnchantmentEntries()) {
+				if (id.equals(Reroller.idOf(entry.getKey())) && entry.getIntValue() >= level) n += stack.getCount();
 			}
 		}
-		return false;
+		return n;
 	}
 
-	private static void aimAtVillager(MinecraftClient client) {
-		VillagerEntity v = villager(client);
+	private static int lecterns(MinecraftClient client) {
+		var inventory = client.player.getInventory();
+		int n = 0;
+		for (int i = 0; i < inventory.size(); i++) if (inventory.getStack(i).isOf(Items.LECTERN)) n += inventory.getStack(i).getCount();
+		return n;
+	}
+
+	private static void aimAt(MinecraftClient client, VillagerEntity v) {
 		if (v == null) return;
 		Vec3d d = v.getEyePos().subtract(client.player.getEyePos());
 		client.player.setYaw((float) Math.toDegrees(Math.atan2(d.z, d.x)) - 90);
