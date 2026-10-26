@@ -51,7 +51,7 @@ import java.util.UUID;
  * A villager's trades only lock once someone trades with it, so it never trades unless told to.
  */
 public final class Reroller {
-	private enum State { OPEN, AWAIT_OFFERS, STEP, BREAK, WAIT_JOBLESS, PLACE, CONFIRM_PLACE, WAIT_JOB, BUY, DECIDE }
+	private enum State { OPEN, AWAIT_OFFERS, STEP, BREAK, WAIT_JOBLESS, PLACE, CONFIRM_PLACE, WAIT_JOB, BUY, DECIDE, WAIT_DAY }
 
 	/** One enchanted book a librarian offers. */
 	public record Book(int index, RegistryEntry<Enchantment> enchantment, int level, int price) {
@@ -82,6 +82,11 @@ public final class Reroller {
 	/** Lectern placements while waiting for the job; the next one is a retry, not a new re-roll. */
 	private static int jobTries;
 	private static boolean retrying;
+	/** Waiting for a sleeping villager to wake; and whether this run has said it's night already. */
+	private static boolean napping, nightSaid;
+	private static int nightAwake, napTicks;
+	/** The server wouldn't let an awake villager trade at night: wait for day, then carry on. */
+	private static boolean nightBlocked;
 	/** Why the last run's villager wouldn't take the lectern (for the self-test). */
 	static List<Text> lastProblems = List.of();
 	/** Dropped lecterns (entity ids) that landed out of pickup reach this run. */
@@ -93,6 +98,7 @@ public final class Reroller {
 	private static final List<Book> bought = new ArrayList<>();
 	private static int boughtHere, booksAtFind;
 	private static float lastHealth;
+	private static int lastHurtTime;
 	private static long endedAt;
 	/** Villagers this run has finished with (bought from, or found already traded). */
 	private static Set<UUID> done = new HashSet<>();
@@ -144,16 +150,26 @@ public final class Reroller {
 		}
 		remaining = new LinkedHashMap<>();
 		config.wanted.forEach((id, w) -> remaining.put(id, w.copy()));
+		boolean asleep = target.isSleeping();
 		done = new HashSet<>();
 		lostDrops = new HashSet<>();
+		napping = false;
+		nightSaid = false;
+		nightAwake = 0;
+		napTicks = 0;
 		seen.clear();
 		bought.clear();
 		rolls = 0;
 		startedAt = System.currentTimeMillis();
 		endedAt = 0;
 		lastHealth = player.getHealth();
+		lastHurtTime = player.hurtTime;
 		begin(client, target, pos);
 		chat(player, Text.translatable("tradeseeker.msg.started", pos.toShortString()).formatted(Formatting.GREEN));
+		// The one you picked is asleep: an awake one in reach saves waiting for sunrise.
+		if (asleep && nextVillager(client, true)) {
+			chat(player, Text.translatable("tradeseeker.msg.switch_awake", villager.getBlockPos().toShortString()).formatted(Formatting.AQUA));
+		}
 	}
 
 	/** Whether all of the lectern's spot is within item pickup reach, so the broken lectern comes back to you. */
@@ -183,15 +199,24 @@ public final class Reroller {
 	 * Returns false when there's none.
 	 */
 	private static boolean nextVillager(MinecraftClient client) {
+		return nextVillager(client, false);
+	}
+
+	/** Awake villagers come first (a sleeping one can't trade); with awakeOnly, sleeping ones are skipped. */
+	private static boolean nextVillager(MinecraftClient client, boolean awakeOnly) {
 		ClientPlayerEntity player = client.player;
 		VillagerEntity best = null;
 		BlockPos bestLectern = null;
 		double bestDistance = Double.MAX_VALUE;
 		for (Entity entity : client.world.getEntities()) {
-			if (!(entity instanceof VillagerEntity v) || v.isBaby() || done.contains(v.getUuid())) continue;
+			if (!(entity instanceof VillagerEntity v) || v.isBaby() || done.contains(v.getUuid()) || v == villager) continue;
 			if ((!isLibrarian(v) && !isJobless(v)) || v.getVillagerData().level() > 1 || !player.canInteractWithEntity(v, 0.5)) continue;
+			if (awakeOnly && v.isSleeping()) continue;
 			BlockPos pos = lecternFor(client, v, false);
-			double d = v.squaredDistanceTo(player);
+			// A jobless one that isn't right beside its lectern would never take it.
+			if (pos != null && isJobless(v) && v.getBlockPos().getManhattanDistance(pos) != 1) continue;
+			// A sleeping villager counts as much further away, so an awake one is picked when there is one.
+			double d = v.squaredDistanceTo(player) + (v.isSleeping() ? 10_000 : 0);
 			if (pos != null && d < bestDistance) {
 				best = v;
 				bestLectern = pos;
@@ -261,7 +286,10 @@ public final class Reroller {
 		}
 		// Chat, the pause menu, the inventory: wait until it's closed. The trade screen is ours.
 		if (client.currentScreen != null && !(client.currentScreen instanceof MerchantScreen)) return;
-		if (ModConfig.INSTANCE.stopWhenHurt && player.getHealth() < lastHealth - 0.01f) {
+		// Hurt: a drop in health, or the red flinch (which shows even when health regenerates before it's sent).
+		boolean flinched = player.hurtTime > 0 && lastHurtTime == 0;
+		lastHurtTime = player.hurtTime;
+		if (ModConfig.INSTANCE.stopWhenHurt && (player.getHealth() < lastHealth - 0.01f || flinched)) {
 			fail(client, "tradeseeker.msg.hurt");
 			return;
 		}
@@ -274,6 +302,7 @@ public final class Reroller {
 			fail(client, "tradeseeker.msg.too_far");
 			return;
 		}
+		if (sleepCheck(client, player)) return;
 		if (delay > 0) {
 			delay--;
 			return;
@@ -290,7 +319,117 @@ public final class Reroller {
 			case WAIT_JOB -> waitJob(client, player);
 			case BUY -> buy(client, player);
 			case DECIDE -> decide(client, player);
+			case WAIT_DAY -> waitDay(client, player);
 		}
+	}
+
+	/**
+	 * Villagers trade, and take jobs, at any hour; the one thing night changes is that a villager with a bed it can
+	 * reach goes to sleep in it, from dusk to sunrise, and a sleeping villager won't trade. So while it sleeps,
+	 * everything waits (it never breaks the lectern on a sleeping villager), with a notice on screen, and carries on
+	 * by itself when it wakes. Returns true while it's waiting.
+	 */
+	private static boolean sleepCheck(MinecraftClient client, ClientPlayerEntity player) {
+		// Putting a broken lectern back doesn't involve the villager, so that still happens: it never sits out the night
+		// with an empty spot. Trading, breaking and waiting for the job all wait.
+		if (state == State.DECIDE || state == State.BUY || state == State.WAIT_JOBLESS || state == State.PLACE || state == State.CONFIRM_PLACE) {
+			return false;
+		}
+		// The lectern is gone (it broke just as the villager fell asleep): put it back first, then wait.
+		if (!client.world.getBlockState(lectern).isOf(Blocks.LECTERN)) {
+			if (state == State.BREAK || state == State.STEP) enter(State.WAIT_JOBLESS);
+			return false;
+		}
+		if (villager.isSleeping()) {
+			// Don't sit out the night: re-roll an awake villager in reach instead, when there is one (checked now and
+			// every few seconds while waiting).
+			if ((!napping || ++napTicks % 100 == 0) && nextVillager(client, true)) {
+				napping = false;
+				chat(player, Text.translatable("tradeseeker.msg.switch_awake", villager.getBlockPos().toShortString()).formatted(Formatting.AQUA));
+				TradeSeekerClient.LOGGER.info("Villager asleep; switched to the awake one at {}", villager.getBlockPos().toShortString());
+				return true;
+			}
+			if (!napping) {
+				napping = true;
+				napTicks = 0;
+				releaseKeys(client);
+				client.interactionManager.cancelBlockBreaking();
+				if (client.currentScreen instanceof MerchantScreen) player.closeHandledScreen();
+				chat(player, Text.translatable("tradeseeker.msg.asleep", untilMorning(client)).formatted(Formatting.GOLD));
+				TradeSeekerClient.LOGGER.info("Villager asleep at time {}; waiting for it to wake", client.world.getTimeOfDay() % 24000);
+			}
+			status(player, Text.translatable("tradeseeker.status.asleep_trade", untilMorning(client)));
+			return true;
+		}
+		if (napping) {
+			napping = false;
+			ticksInState = 0;
+			delay = 20;
+			Sounds.morning();
+			chat(player, Text.translatable("tradeseeker.msg.awake").formatted(Formatting.GREEN));
+			TradeSeekerClient.LOGGER.info("Villager awake; carrying on");
+		}
+		// Still awake well into the night: say so once, so a quiet night doesn't look like it stalled.
+		nightAwake = isNight(client) ? nightAwake + 1 : 0;
+		if (!nightSaid && nightAwake > 600) {
+			nightSaid = true;
+			BlockPos bed = nearbyBed(client, villager);
+			chat(player, (bed == null ? Text.translatable("tradeseeker.msg.night_awake")
+					: Text.translatable("tradeseeker.msg.night_awake_bed", bed.toShortString())).formatted(Formatting.GRAY));
+		}
+		return false;
+	}
+
+	/** What villagers do at a time of day (vanilla schedule), as a translation key suffix. */
+	static String activityAt(long time) {
+		time %= 24000;
+		if (time < 2000) return "idle";
+		if (time < 9000) return "work";
+		if (time < 11000) return "meet";
+		if (time < 12000) return "idle";
+		return "rest";
+	}
+
+	/** A day time as a clock (time 0 is 6:00 in the morning). */
+	static String clock(long time) {
+		time %= 24000;
+		long hours = (time / 1000 + 6) % 24, minutes = time % 1000 * 60 / 1000;
+		return String.format(java.util.Locale.ROOT, "%02d:%02d", hours, minutes);
+	}
+
+	static boolean nightBlocked() {
+		return nightBlocked;
+	}
+
+	/** Villagers' rest time: dusk (12000) to sunrise (24000, the start of the next day). */
+	static boolean isNight(MinecraftClient client) {
+		return client.world.getTimeOfDay() % 24000 >= 12000;
+	}
+
+	/** The notice drawn on screen while it waits for a sleeping villager, or null. */
+	public static List<Text> notice(MinecraftClient client) {
+		if (state == State.WAIT_DAY && client.world != null) {
+			return List.of(Text.translatable("tradeseeker.notice.blocked_title"), Text.translatable("tradeseeker.notice.blocked_line", untilMorning(client)),
+					Text.translatable("tradeseeker.notice.blocked_tip"));
+		}
+		if (state == null || !napping || client.world == null) return null;
+		return List.of(Text.translatable("tradeseeker.notice.title"), Text.translatable("tradeseeker.notice.line", untilMorning(client)),
+				Text.translatable("tradeseeker.notice.tip"));
+	}
+
+	/** The nearest bed within 16 blocks of the villager (it may claim one and sleep in it at night), or null. */
+	static BlockPos nearbyBed(MinecraftClient client, VillagerEntity v) {
+		BlockPos at = v.getBlockPos(), best = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (BlockPos pos : BlockPos.iterate(at.add(-16, -4, -16), at.add(16, 4, 16))) {
+			if (!client.world.getBlockState(pos).isIn(net.minecraft.registry.tag.BlockTags.BEDS)) continue;
+			double d = pos.getSquaredDistance(at);
+			if (d < bestDistance) {
+				best = pos.toImmutable();
+				bestDistance = d;
+			}
+		}
+		return best;
 	}
 
 	private static void open(MinecraftClient client, ClientPlayerEntity player) {
@@ -302,12 +441,6 @@ public final class Reroller {
 			fail(client, "tradeseeker.msg.too_far_villager");
 			return;
 		}
-		// A villager asleep in its bed won't trade; it wakes around sunrise. Wait for it rather than give up.
-		if (villager.isSleeping()) {
-			status(player, Text.translatable("tradeseeker.status.asleep_trade", untilMorning(client)));
-			delay = 20;
-			return;
-		}
 		lookAt(player, villager.getEyePos().subtract(0, 0.2, 0));
 		Vec3d at = villager.getBoundingBox().getCenter();
 		client.interactionManager.interactEntityAtLocation(player, villager, new EntityHitResult(villager, at), Hand.MAIN_HAND);
@@ -315,6 +448,16 @@ public final class Reroller {
 		player.swingHand(Hand.MAIN_HAND);
 		enter(State.AWAIT_OFFERS);
 		delay = 0;
+	}
+
+	private static void waitDay(MinecraftClient client, ClientPlayerEntity player) {
+		if (isNight(client)) {
+			status(player, Text.translatable("tradeseeker.status.night_blocked", untilMorning(client)));
+			return;
+		}
+		Sounds.morning();
+		chat(player, Text.translatable("tradeseeker.msg.day_again").formatted(Formatting.GREEN));
+		enter(State.OPEN);
 	}
 
 	private static void awaitOffers(MinecraftClient client, ClientPlayerEntity player) {
@@ -326,6 +469,15 @@ public final class Reroller {
 		if (ticksInState > 60) {
 			if (client.currentScreen instanceof MerchantScreen) player.closeHandledScreen();
 			if (++attempts >= 3) {
+				if (isNight(client) && !villager.isSleeping()) {
+					// Awake, yet no trades at night: this server must not allow night trading. Another villager won't
+					// do better, so wait for sunrise and carry on then.
+					attempts = 0;
+					nightBlocked = true;
+					chat(player, Text.translatable("tradeseeker.msg.night_blocked", untilMorning(client)).formatted(Formatting.GOLD));
+					enter(State.WAIT_DAY);
+					return;
+				}
 				fail(client, "tradeseeker.msg.no_trades");
 				return;
 			}
@@ -708,12 +860,6 @@ public final class Reroller {
 			enter(State.PLACE);
 			return;
 		}
-		// Asleep: it can still find the lectern, but give it the time; the clock doesn't run.
-		if (villager.isSleeping()) {
-			ticksInState = Math.min(ticksInState, 200);
-			status(player, Text.translatable("tradeseeker.status.asleep"));
-			return;
-		}
 		int seconds = ticksInState / 20;
 		status(player, jobTries == 0 ? Text.translatable("tradeseeker.status.wait_job", rolls, seconds)
 				: Text.translatable("tradeseeker.status.wait_job_retry", rolls, seconds, jobTries + 1, JOB_TRIES));
@@ -981,6 +1127,18 @@ public final class Reroller {
 					Text.translatable("tradeseeker.check.villager.tip")));
 			if (v.isSleeping()) {
 				checks.add(new Check(Status.WARN, Text.translatable("tradeseeker.check.asleep"), Text.translatable("tradeseeker.check.asleep.tip", untilMorning(client))));
+			} else {
+				BlockPos bed = nearbyBed(client, v);
+				long time = client.world.getTimeOfDay() % 24000;
+				if (bed != null) {
+					// It may sleep in that bed from dusk to sunrise, and won't trade then.
+					Text when = isNight(client) ? Text.translatable("tradeseeker.check.bed.now")
+							: Text.translatable("tradeseeker.check.bed.later", Odds.duration((12000 - time) / 20.0));
+					checks.add(new Check(Status.WARN, Text.translatable("tradeseeker.check.bed"),
+							Text.translatable("tradeseeker.check.bed.tip", bed.toShortString(), when)));
+				} else if (isNight(client)) {
+					checks.add(new Check(Status.OK, Text.translatable("tradeseeker.check.night_ok"), Text.translatable("tradeseeker.check.night_ok.tip")));
+				}
 			}
 			BlockPos pos = running() ? lectern : lecternFor(client, v, true);
 			if (pos == null) {
@@ -1039,6 +1197,10 @@ public final class Reroller {
 
 	static VillagerEntity target() {
 		return villager;
+	}
+
+	static boolean napping() {
+		return napping;
 	}
 
 	static int jobTries() {

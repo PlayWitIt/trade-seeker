@@ -63,6 +63,13 @@ public final class Sounds {
 		add(5, SoundEvents.ENTITY_VILLAGER_YES, 1.0f, 0.9f);
 	}
 
+	/** The villager woke up and it's carrying on: a soft rising harp. */
+	public static void morning() {
+		note(0, SoundEvents.BLOCK_NOTE_BLOCK_HARP.value(), 12, 0.6f);
+		note(3, SoundEvents.BLOCK_NOTE_BLOCK_HARP.value(), 16, 0.6f);
+		note(6, SoundEvents.BLOCK_NOTE_BLOCK_HARP.value(), 19, 0.6f);
+	}
+
 	/** Every wanted book is in: the challenge-complete fanfare. */
 	public static void allDone() {
 		add(4, SoundEvents.UI_TOAST_CHALLENGE_COMPLETE, 1f, 0.9f);

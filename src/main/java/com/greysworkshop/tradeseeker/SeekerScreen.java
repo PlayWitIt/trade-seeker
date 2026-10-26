@@ -270,6 +270,7 @@ public final class SeekerScreen extends Screen {
 		TextRenderer font = textRenderer;
 		context.drawItem(new ItemStack(Items.LECTERN), PAD, 4);
 		context.drawTextWithShadow(font, title, PAD + 20, 8, GOLD);
+		drawDayClock(context);
 
 		// Help, far right.
 		String help = "?";
@@ -302,6 +303,33 @@ public final class SeekerScreen extends Screen {
 		Text subtitle = Text.translatable("tradeseeker.subtitle");
 		int subX = PAD + 24 + font.getWidth(title);
 		if (subX + font.getWidth(subtitle) < sx - 14) context.drawText(font, subtitle, subX, 8, DIM, false);
+	}
+
+	/**
+	 * A thin bar under the title: the villager day (work, gathering, rest...) with a mark for now. Hover it for the
+	 * time, what villagers are doing, and whether this one can trade now.
+	 */
+	private void drawDayClock(DrawContext context) {
+		if (client == null || client.world == null) return;
+		int x0 = PAD, x1 = width - PAD, y = 19;
+		long time = client.world.getTimeOfDay() % 24000;
+		int[][] spans = {{0, 2000, 0xFF707080}, {2000, 9000, 0xFF3FA866}, {9000, 11000, 0xFFD9A53A}, {11000, 12000, 0xFF707080}, {12000, 24000, 0xFF3A3F8C}};
+		for (int[] s : spans) {
+			context.fill(x0 + (int) ((long) (x1 - x0) * s[0] / 24000), y, x0 + (int) ((long) (x1 - x0) * s[1] / 24000), y + 2, s[2]);
+		}
+		int now = x0 + (int) ((x1 - x0) * time / 24000);
+		context.fill(now - 1, y - 2, now + 1, y + 4, 0xFFFFFFFF);
+		hit(x0, y - 3, x1, y + 5, null, this::dayClockTip);
+	}
+
+	private List<Text> dayClockTip() {
+		long time = client.world.getTimeOfDay() % 24000;
+		List<Text> l = new ArrayList<>();
+		l.add(Text.translatable("tradeseeker.day.now", Reroller.clock(time), Text.translatable("tradeseeker.day." + Reroller.activityAt(time))).formatted(Formatting.WHITE));
+		l.add(Text.translatable("tradeseeker.day.schedule").formatted(Formatting.GRAY));
+		l.add(Text.translatable("tradeseeker.day.trading").formatted(Formatting.GRAY));
+		if (Reroller.nightBlocked()) l.add(Text.translatable("tradeseeker.day.blocked").formatted(Formatting.GOLD));
+		return l;
 	}
 
 	private void drawList(DrawContext context, int mouseX, int mouseY) {

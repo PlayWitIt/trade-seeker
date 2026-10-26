@@ -66,6 +66,22 @@ before you start. The clock pauses while the villager is asleep.
 
 Lecterns in your **offhand** work: they're placed from there and count as spares.
 
+## Night
+
+Villagers trade, and take jobs, at any hour. This comes from the game's code: the only thing that stops a trade is
+a villager asleep in a bed (or a baby, or one another player is already trading with). Villagers with no bed in
+reach never sleep. So:
+
+- **Night with no beds:** it carries on as normal.
+- **The villager goes to bed:** it doesn't wait. If another untraded villager in reach is awake, it re-rolls that
+  one instead.
+- **Only sleeping villagers left:** it pauses without breaking anything, shows a notice with the time to sunrise,
+  and carries on by itself when the villager wakes.
+- **Your server blocks night trading:** some servers do this with plugins. It notices when an awake villager won't
+  trade at night, and waits for sunrise in the same way.
+- **The menu:** the bar under the title is the villager day (work, gathering, rest), with a mark for now. Hover over
+  it for the details. The checklist warns about a bed near the villager.
+
 ## Trading halls
 
 Stand in the aisle, right up against the lectern. When it moves on to another villager, it sneaks along the aisle to
