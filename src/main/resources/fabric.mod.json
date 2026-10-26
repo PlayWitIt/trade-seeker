@@ -22,5 +22,6 @@
 	},
 	"mixins": [
 		"tradeseeker.mixins.json"
-	]
+	],
+	"icon": "assets/tradeseeker/icon.png"
 }
