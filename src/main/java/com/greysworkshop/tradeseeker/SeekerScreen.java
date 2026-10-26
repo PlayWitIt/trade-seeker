@@ -85,6 +85,7 @@ public final class SeekerScreen extends Screen {
 	private double scroll;
 	private Drag drag = Drag.NONE;
 	private boolean options;
+	private int optionsTab;
 	private List<Reroller.Check> checks = List.of();
 	private int checksAge;
 
@@ -275,7 +276,7 @@ public final class SeekerScreen extends Screen {
 		int hx1 = width - PAD, hx0 = hx1 - 14;
 		chip(context, hx0, 5, hx1, 17, false);
 		context.drawText(font, help, hx0 + 5, 7, MUTED, false);
-		hit(hx0, 5, hx1, 17, null, () -> lines("tradeseeker.help", 9));
+		hit(hx0, 5, hx1, 17, null, () -> lines("tradeseeker.help", 10));
 
 		// Status, left of help.
 		Text status;
@@ -388,8 +389,9 @@ public final class SeekerScreen extends Screen {
 				// Checkbox: its own click target, so you can pick without changing the selection.
 				int bx = listX0 + 7, by = y + 5;
 				boolean boxHover = mouseX >= bx - 3 && mouseX < bx + 11 && hover;
+				context.fill(bx, by, bx + 9, by + 9, on ? ACCENT_DARK : 0x30000000);
 				context.drawStrokedRectangle(bx, by, 9, 9, on ? ACCENT : boxHover ? TEXT : DIM);
-				if (on) context.fill(bx + 2, by + 2, bx + 7, by + 7, ACCENT);
+				if (on) context.drawText(font, "✔", bx + 1, by + 1, 0xFFFFFFFF, false);
 				context.drawItem(c.icon, listX0 + 20, y + 1);
 
 				String right = on ? summary(c, shownWant(c)) : c.maxLevel > 1 ? roman(c.minLevel) + "–" + roman(c.maxLevel) : "";
@@ -741,12 +743,13 @@ public final class SeekerScreen extends Screen {
 
 	// ---- Options (a small panel over the screen) ----
 
+	/** Options, in two tabs so the panel fits the smallest GUI (240 high). */
 	private void drawOptions(DrawContext context, int mouseX, int mouseY) {
 		ModConfig config = ModConfig.INSTANCE;
 		TextRenderer font = textRenderer;
 		hits.clear();
 		context.fill(0, 0, width, height, 0x88000000);
-		int w = Math.min(260, width - 20), h = 164;
+		int w = Math.min(260, width - 20), h = 206;
 		int x0 = (width - w) / 2, y0 = (height - h) / 2, x1 = x0 + w;
 		// Clicks outside close it.
 		hit(0, 0, width, height, () -> options = false, null);
@@ -755,48 +758,108 @@ public final class SeekerScreen extends Screen {
 		context.fill(x0 + 1, y0 + 1, x1 - 1, y0 + 18, HEADER);
 		hit(x0, y0, x1, y0 + h, () -> {}, null);
 		context.drawTextWithShadow(font, Text.translatable("tradeseeker.options.title"), x0 + 8, y0 + 6, GOLD);
-		int x = x0 + 10, y = y0 + 26;
 
-		context.drawText(font, Text.translatable("tradeseeker.speed"), x, y + 4, TEXT, false);
-		int sx = x1 - 10 - 3 * 52;
-		for (ModConfig.Speed speed : ModConfig.Speed.values()) {
-			segment(context, sx, y, 50, Text.translatable("tradeseeker.speed." + speed.name().toLowerCase(Locale.ROOT)).getString(),
-					config.speed == speed, config.speed == speed, true, true, mouseX, mouseY, () -> {
-						config.speed = speed;
-						ModConfig.save();
-					}, () -> List.of(Text.translatable("tradeseeker.speed." + speed.name().toLowerCase(Locale.ROOT) + ".tip")));
-			sx += 52;
+		// Tabs.
+		int tx = x0 + 6, ty = y0 + 22;
+		for (int i = 0; i < 2; i++) {
+			int which = i;
+			Text label = Text.translatable(i == 0 ? "tradeseeker.options.behaviour" : "tradeseeker.options.sounds");
+			int tw = font.getWidth(label) + 10;
+			boolean active = optionsTab == i;
+			boolean hover = mouseX >= tx && mouseX < tx + tw && mouseY >= ty && mouseY < ty + 13;
+			if (hover && !active) context.fill(tx, ty, tx + tw, ty + 13, HOVER);
+			context.drawText(font, label, tx + 5, ty + 2, active ? TEXT : hover ? MUTED : DIM, false);
+			if (active) context.fill(tx + 3, ty + 12, tx + tw - 3, ty + 13, ACCENT);
+			hit(tx, ty, tx + tw, ty + 13, () -> optionsTab = which, null);
+			tx += tw + 2;
 		}
-		y += 22;
-		toggleRow(context, x, y, Text.translatable("tradeseeker.opt.face"), config.faceTargets, true, mouseX, mouseY, () -> {
-			config.faceTargets = !config.faceTargets;
-			ModConfig.save();
-		}, () -> List.of(Text.translatable("tradeseeker.opt.face.tip")));
-		y += 17;
-		toggleRow(context, x, y, Text.translatable("tradeseeker.opt.hurt"), config.stopWhenHurt, true, mouseX, mouseY, () -> {
-			config.stopWhenHurt = !config.stopWhenHurt;
-			ModConfig.save();
-		}, () -> List.of(Text.translatable("tradeseeker.opt.hurt.tip")));
-		y += 17;
-		toggleRow(context, x, y, Text.translatable("tradeseeker.opt.near"), config.nearMisses, true, mouseX, mouseY, () -> {
-			config.nearMisses = !config.nearMisses;
-			ModConfig.save();
-		}, () -> List.of(Text.translatable("tradeseeker.opt.near.tip")));
-		y += 17;
-		toggleRow(context, x, y, Text.translatable("tradeseeker.opt.sound"), config.sound, true, mouseX, mouseY, () -> {
-			config.sound = !config.sound;
-			ModConfig.save();
-		}, null);
-		y += 19;
+		context.fill(x0 + 1, ty + 14, x1 - 1, ty + 15, PANEL_EDGE);
+		int x = x0 + 10, y = ty + 21;
 
-		context.drawText(font, Text.translatable("tradeseeker.opt.limit"), x, y + 4, TEXT, false);
-		Text limit = config.maxRolls == 0 ? Text.translatable("tradeseeker.opt.limit.never") : Text.literal(Integer.toString(config.maxRolls));
-		int lx1 = x1 - 10, lx0 = lx1 - 84;
-		stepper(context, lx0, y, lx1, limit, mouseX, mouseY, step -> {
-			config.maxRolls = Math.max(0, config.maxRolls + step);
-			ModConfig.save();
-		});
-		y += 22;
+		if (optionsTab == 0) {
+			context.drawText(font, Text.translatable("tradeseeker.speed"), x, y + 4, TEXT, false);
+			int sx = x1 - 10 - 3 * 52;
+			for (ModConfig.Speed speed : ModConfig.Speed.values()) {
+				String key = "tradeseeker.speed." + speed.name().toLowerCase(Locale.ROOT);
+				segment(context, sx, y, 50, Text.translatable(key).getString(), config.speed == speed, config.speed == speed, true, true, mouseX, mouseY,
+						() -> {
+							config.speed = speed;
+							ModConfig.save();
+						}, () -> List.of(Text.translatable(key + ".tip")));
+				sx += 52;
+			}
+			y += 21;
+			context.drawText(font, Text.translatable("tradeseeker.opt.job_wait"), x, y + 4, TEXT, false);
+			Text wait = Text.literal((config.jobWait % 1 == 0 ? Integer.toString((int) config.jobWait) : Double.toString(config.jobWait)) + " s");
+			stepper(context, x1 - 10 - 84, y, x1 - 10, wait, mouseX, mouseY, step -> {
+				config.jobWait = MathHelper.clamp(config.jobWait + (step > 0 ? 0.5 : -0.5), 3, 30);
+				ModConfig.save();
+			}, "tradeseeker.opt.job_wait.tip");
+			y += 20;
+			context.drawText(font, Text.translatable("tradeseeker.opt.limit"), x, y + 4, TEXT, false);
+			Text limit = config.maxRolls == 0 ? Text.translatable("tradeseeker.opt.limit.never") : Text.literal(Integer.toString(config.maxRolls));
+			stepper(context, x1 - 10 - 84, y, x1 - 10, limit, mouseX, mouseY, step -> {
+				config.maxRolls = Math.max(0, config.maxRolls + step);
+				ModConfig.save();
+			}, "tradeseeker.opt.limit.tip");
+			y += 22;
+			toggleRow(context, x, y, Text.translatable("tradeseeker.opt.untick"), config.untickBought, true, mouseX, mouseY, () -> {
+				config.untickBought = !config.untickBought;
+				ModConfig.save();
+			}, () -> List.of(Text.translatable("tradeseeker.opt.untick.tip")));
+			y += 16;
+			toggleRow(context, x, y, Text.translatable("tradeseeker.opt.hurt"), config.stopWhenHurt, true, mouseX, mouseY, () -> {
+				config.stopWhenHurt = !config.stopWhenHurt;
+				ModConfig.save();
+			}, () -> List.of(Text.translatable("tradeseeker.opt.hurt.tip")));
+			y += 16;
+			toggleRow(context, x, y, Text.translatable("tradeseeker.opt.face"), config.faceTargets, true, mouseX, mouseY, () -> {
+				config.faceTargets = !config.faceTargets;
+				ModConfig.save();
+			}, () -> List.of(Text.translatable("tradeseeker.opt.face.tip")));
+			y += 16;
+			toggleRow(context, x, y, Text.translatable("tradeseeker.opt.near"), config.nearMisses, true, mouseX, mouseY, () -> {
+				config.nearMisses = !config.nearMisses;
+				ModConfig.save();
+			}, () -> List.of(Text.translatable("tradeseeker.opt.near.tip")));
+		} else {
+			// The find sound: click one to hear it.
+			context.drawText(font, Text.translatable("tradeseeker.opt.sound"), x, y + 4, TEXT, false);
+			Sounds.Style[] styles = Sounds.Style.values();
+			int[] widths = new int[styles.length];
+			int total = 2 * (styles.length - 1);
+			for (int i = 0; i < styles.length; i++) {
+				widths[i] = font.getWidth(Text.translatable("tradeseeker.sound." + styles[i].name().toLowerCase(Locale.ROOT))) + 10;
+				total += widths[i];
+			}
+			int segX = x1 - 10 - total;
+			for (int i = 0; i < styles.length; i++) {
+				Sounds.Style style = styles[i];
+				String key = "tradeseeker.sound." + style.name().toLowerCase(Locale.ROOT);
+				segment(context, segX, y, widths[i], Text.translatable(key).getString(), config.foundSound == style, config.foundSound == style, true, true,
+						mouseX, mouseY, () -> {
+							config.foundSound = style;
+							ModConfig.save();
+							Sounds.play(style, 1f);
+						}, () -> List.of(Text.translatable("tradeseeker.sound.tip")));
+				segX += widths[i] + 2;
+			}
+			y += 21;
+			context.drawText(font, Text.translatable("tradeseeker.opt.volume"), x, y + 4, TEXT, false);
+			Text vol = config.volume == 0 ? Text.translatable("options.off") : Text.literal(config.volume + "%");
+			stepper(context, x1 - 10 - 84, y, x1 - 10, vol, mouseX, mouseY, step -> {
+				config.volume = MathHelper.clamp(config.volume + (step > 0 ? 10 : -10), 0, 100);
+				ModConfig.save();
+				Sounds.play(config.foundSound, 1f);
+			}, "tradeseeker.opt.volume.tip");
+			y += 22;
+			toggleRow(context, x, y, Text.translatable("tradeseeker.opt.remind"), config.remind, true, mouseX, mouseY, () -> {
+				config.remind = !config.remind;
+				ModConfig.save();
+			}, () -> List.of(Text.translatable("tradeseeker.opt.remind.tip")));
+			y += 18;
+			drawWrapped(context, Text.translatable("tradeseeker.sound.about"), x, y, x1 - x0 - 20, DIM);
+		}
 		button(context, x1 - 70, y0 + h - 24, 60, Text.translatable("gui.done"), MUTED, true, false, mouseX, mouseY, () -> options = false, null);
 		Hit hover = hitAt(mouseX, mouseY);
 		if (hover != null && hover.tooltip != null) {
@@ -809,7 +872,7 @@ public final class SeekerScreen extends Screen {
 		void by(int amount);
 	}
 
-	private void stepper(DrawContext context, int x0, int y, int x1, Text value, int mouseX, int mouseY, Step step) {
+	private void stepper(DrawContext context, int x0, int y, int x1, Text value, int mouseX, int mouseY, Step step, String tipKey) {
 		int h = 16;
 		boolean minus = mouseX >= x0 && mouseX < x0 + 16 && mouseY >= y && mouseY < y + h;
 		boolean plus = mouseX >= x1 - 16 && mouseX < x1 && mouseY >= y && mouseY < y + h;
@@ -819,7 +882,7 @@ public final class SeekerScreen extends Screen {
 		context.drawText(textRenderer, "+", x1 - 11, y + 4, plus ? TEXT : MUTED, false);
 		int vw = textRenderer.getWidth(value);
 		context.drawText(textRenderer, value, (x0 + x1 - vw) / 2, y + 4, GOLD, false);
-		Supplier<List<Text>> tip = () -> List.of(Text.translatable("tradeseeker.opt.limit.tip"));
+		Supplier<List<Text>> tip = () -> List.of(Text.translatable(tipKey));
 		hit(x0, y, x0 + 16, y + h, () -> step.by(hasShiftDown() ? -50 : -10), tip);
 		hit(x1 - 16, y, x1, y + h, () -> step.by(hasShiftDown() ? 50 : 10), tip);
 	}
@@ -1101,5 +1164,9 @@ public final class SeekerScreen extends Screen {
 
 	void testOptions(boolean open) {
 		options = open;
+	}
+
+	void testOptionsTab(int which) {
+		optionsTab = which;
 	}
 }

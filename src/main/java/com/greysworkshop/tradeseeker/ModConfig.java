@@ -86,6 +86,15 @@ public final class ModConfig {
 	/** Give up after this many re-rolls (0 = never). */
 	public int maxRolls = 0;
 	public boolean sound = true;
+	/** How a find sounds, and how loud the mod's sounds are (percent). */
+	public Sounds.Style foundSound = Sounds.Style.CHIME;
+	public int volume = 100;
+	/** Auto-buy off: repeat the find sound every 10 seconds until you buy or close the trade. */
+	public boolean remind = true;
+	/** Take a book off the wanted list once it's bought, so it isn't rolled for again. */
+	public boolean untickBought = true;
+	/** Seconds to wait for the villager to take the lectern before placing it again. */
+	public double jobWait = 5.5;
 	/** Say in chat when a wanted book turns up at the wrong level or price. */
 	public boolean nearMisses = true;
 	/** Stop if you take damage (on an anarchy server, someone may be at you). */
@@ -112,6 +121,9 @@ public final class ModConfig {
 				loaded.wanted.values().removeIf(w -> w == null);
 				loaded.wanted.values().forEach(Want::clamp);
 				if (loaded.speed == null) loaded.speed = Speed.NORMAL;
+				if (loaded.foundSound == null) loaded.foundSound = Sounds.Style.CHIME;
+				loaded.volume = Math.max(0, Math.min(100, loaded.volume));
+				if (!(loaded.jobWait >= 3 && loaded.jobWait <= 30)) loaded.jobWait = 5.5;
 				if (loaded.tab == null) loaded.tab = "ALL";
 				if (!(loaded.secondsPerRoll >= 0.5 && loaded.secondsPerRoll <= 60)) loaded.secondsPerRoll = 3.0;
 				loaded.maxRolls = Math.max(0, loaded.maxRolls);

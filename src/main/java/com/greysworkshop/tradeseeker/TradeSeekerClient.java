@@ -40,6 +40,7 @@ public final class TradeSeekerClient implements ClientModInitializer {
 				}
 			}
 			Reroller.tick(client);
+			Sounds.tick(client);
 		});
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> Reroller.stop(client, null));
 

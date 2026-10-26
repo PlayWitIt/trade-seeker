@@ -7,7 +7,8 @@ until the villager offers a book you picked, at a level and price you accept.
 
 1. Put a lectern next to a villager that nobody has traded with (jobless, or a Novice librarian).
 2. Stand right up against the lectern, with an axe in your hotbar.
-3. Press **J**. Pick books on the left. For the selected book, set on the right:
+3. Press **J**. Tick every book you'd take: that's your **Wanted** list. It stops at whichever turns up first, so no
+   good trade is skipped. Click a book to set its options on the right:
    - **Lowest level**: that level or better counts.
    - **Price**: drag the two ends of the slider (or scroll over them). The gold band shows what villagers really ask
      for that book. The presets are Any, the cheaper half, and a bargain (the cheapest quarter).
@@ -17,7 +18,17 @@ until the villager offers a book you picked, at a level and price you accept.
 The checklist above Start shows what's in place: the villager, the lectern, an axe, spare lecterns and, with
 auto-buy, the emeralds, books and inventory space. Start stays greyed out until nothing is missing.
 
-When it finds a book it plays a sound, shows a toast and stops with the trade selected. You decide whether to buy.
+When it finds a book, it plays a jingle and shows a toast, then waits with the trade open and selected. You decide:
+
+- **Buy it** (take it from the result slot), then close the trade. It notices the purchase and carries on with the
+  next untraded villager in reach for the rest of your list.
+- **Close without buying**: it stops and leaves the trade as it is, so a stray Esc can't throw a good book away.
+  Press Start to carry on.
+
+It repeats the jingle every 10 seconds until you act (Options: Keep reminding me).
+
+There are four find sounds: Chime, Bell, Fanfare and Level up. Click one in Options to hear it, and set the volume
+there. A purchase plays a coin and a happy villager, and a finished list plays the challenge fanfare.
 
 - **Auto-buy** (off by default) buys it for you. Then it moves to the next untraded villager in reach for the books
   still wanted.
@@ -39,6 +50,21 @@ has already been traded with.
   - Near-miss messages, sound, and a re-roll limit.
 - Keys: **J** opens the menu, even while it's running. "Start / stop re-rolling" can be bound in Controls.
 - Settings and the menu's tab and selection are kept in `config/tradeseeker.json`. 1.0.0 settings carry over.
+
+## When the villager won't take the lectern
+
+A jobless villager only takes a lectern if three things hold:
+
+- its job search finds a walking path to a spot right beside the lectern (not diagonal, not a block higher or lower);
+- no other jobless villager within 48 blocks has reserved the lectern first;
+- it ends up within 2 blocks of the lectern.
+
+After a failed path, the game makes it wait longer each time before trying again, up to 20 seconds. So if no job
+comes within about 15 seconds, the mod breaks the lectern and places it again. That cancels any reservation and
+starts a fresh search. After 5 tries it stops and says what's likely wrong. The checklist warns about both problems
+before you start. The clock pauses while the villager is asleep.
+
+Lecterns in your **offhand** work: they're placed from there and count as spares.
 
 ## Trading halls
 

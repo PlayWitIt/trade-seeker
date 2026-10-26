@@ -51,7 +51,7 @@ import java.util.UUID;
  * A villager's trades only lock once someone trades with it, so it never trades unless told to.
  */
 public final class Reroller {
-	private enum State { OPEN, AWAIT_OFFERS, STEP, BREAK, WAIT_JOBLESS, PLACE, CONFIRM_PLACE, WAIT_JOB, BUY }
+	private enum State { OPEN, AWAIT_OFFERS, STEP, BREAK, WAIT_JOBLESS, PLACE, CONFIRM_PLACE, WAIT_JOB, BUY, DECIDE }
 
 	/** One enchanted book a librarian offers. */
 	public record Book(int index, RegistryEntry<Enchantment> enchantment, int level, int price) {
@@ -78,6 +78,12 @@ public final class Reroller {
 	private static Book found;
 	private static Set<UUID> neighbours = Set.of();
 	private static boolean stepping;
+	private static final int JOB_TRIES = 8;
+	/** Lectern placements while waiting for the job; the next one is a retry, not a new re-roll. */
+	private static int jobTries;
+	private static boolean retrying;
+	/** Why the last run's villager wouldn't take the lectern (for the self-test). */
+	static List<Text> lastProblems = List.of();
 	/** Dropped lecterns (entity ids) that landed out of pickup reach this run. */
 	private static Set<Integer> lostDrops = new HashSet<>();
 	/** This run's wanted books; one is crossed off when it's bought, and the rest are sought from the next villager. */
@@ -85,7 +91,7 @@ public final class Reroller {
 	/** Newest first, this run only. */
 	private static final List<Seen> seen = new ArrayList<>();
 	private static final List<Book> bought = new ArrayList<>();
-	private static int boughtHere;
+	private static int boughtHere, booksAtFind;
 	private static float lastHealth;
 	private static long endedAt;
 	/** Villagers this run has finished with (bought from, or found already traded). */
@@ -148,14 +154,14 @@ public final class Reroller {
 		lastHealth = player.getHealth();
 		begin(client, target, pos);
 		chat(player, Text.translatable("tradeseeker.msg.started", pos.toShortString()).formatted(Formatting.GREEN));
-		if (!canCatchDrop(player, pos)) chat(player, Text.translatable("tradeseeker.msg.step_closer").formatted(Formatting.YELLOW));
 	}
 
 	/** Whether all of the lectern's spot is within item pickup reach, so the broken lectern comes back to you. */
 	private static boolean canCatchDrop(ClientPlayerEntity player, BlockPos pos) {
 		Box reach = player.getBoundingBox().expand(1, 0.5, 1);
-		// A broken block's drop appears within a quarter block of the middle.
-		Box spot = new Box(pos).contract(0.25);
+		// A broken lectern's drop can fly to any part of its spot (walls keep it in), and is caught once its box
+		// (1/8 block either side of its middle) touches the reach: so all of the spot, less that 1/8, must be in reach.
+		Box spot = new Box(pos).contract(0.125);
 		return reach.minX <= spot.minX && reach.maxX >= spot.maxX && reach.minZ <= spot.minZ && reach.maxZ >= spot.maxZ
 				&& reach.minY <= spot.minY + 0.5;
 	}
@@ -167,6 +173,8 @@ public final class Reroller {
 		found = null;
 		lastSeen = Text.empty();
 		neighbours = joblessNeighbours(client);
+		jobTries = 0;
+		retrying = false;
 		enter(isLibrarian(target) ? State.OPEN : State.WAIT_JOB);
 	}
 
@@ -281,6 +289,7 @@ public final class Reroller {
 			case CONFIRM_PLACE -> confirmPlace(client, player);
 			case WAIT_JOB -> waitJob(client, player);
 			case BUY -> buy(client, player);
+			case DECIDE -> decide(client, player);
 		}
 	}
 
@@ -291,6 +300,12 @@ public final class Reroller {
 		}
 		if (!player.canInteractWithEntity(villager, 0.5)) {
 			fail(client, "tradeseeker.msg.too_far_villager");
+			return;
+		}
+		// A villager asleep in its bed won't trade; it wakes around sunrise. Wait for it rather than give up.
+		if (villager.isSleeping()) {
+			status(player, Text.translatable("tradeseeker.status.asleep_trade", untilMorning(client)));
+			delay = 20;
 			return;
 		}
 		lookAt(player, villager.getEyePos().subtract(0, 0.2, 0));
@@ -394,7 +409,40 @@ public final class Reroller {
 		if (ModConfig.INSTANCE.autoBuy) {
 			enter(State.BUY);
 		} else {
-			stop(client, Text.translatable("tradeseeker.msg.your_call").formatted(Formatting.YELLOW));
+			booksAtFind = count(player.getInventory(), Items.ENCHANTED_BOOK);
+			chat(player, Text.translatable("tradeseeker.msg.your_call").formatted(Formatting.YELLOW));
+			enter(State.DECIDE);
+			delay = 0;
+		}
+	}
+
+	/**
+	 * Auto-buy off: the trade is open and it's your call. Buying is noticed (the trade's use count, or the book turning
+	 * up in your inventory); once you close the trade it carries on with the next villager. Closing without buying
+	 * stops and leaves the trade as it is, so a stray Esc can't throw a good book away.
+	 */
+	private static void decide(MinecraftClient client, ClientPlayerEntity player) {
+		delay = 0;
+		if (client.currentScreen instanceof MerchantScreen screen) {
+			TradeOfferList offers = screen.getScreenHandler().getRecipes();
+			int uses = found.index() < offers.size() ? offers.get(found.index()).getUses() : 0;
+			int gained = count(player.getInventory(), Items.ENCHANTED_BOOK) - booksAtFind;
+			int now = Math.max(uses, gained);
+			if (now > boughtHere) {
+				for (int i = boughtHere; i < now; i++) bought.add(found);
+				boughtHere = now;
+				Sounds.bought();
+				status(player, Text.translatable("tradeseeker.status.bought_close", boughtHere));
+			} else if (boughtHere == 0 && ModConfig.INSTANCE.remind && ticksInState % 200 == 0) {
+				// Away from the keyboard? Say it again every 10 seconds until you act.
+				Sounds.found(true);
+			}
+			return;
+		}
+		if (boughtHere > 0) {
+			finishBuying(client, player);
+		} else {
+			stop(client, Text.translatable("tradeseeker.msg.left_it").formatted(Formatting.YELLOW));
 		}
 	}
 
@@ -444,12 +492,21 @@ public final class Reroller {
 	private static void finishBuying(MinecraftClient client, ClientPlayerEntity player) {
 		Text what = boughtHere > 1 ? Text.translatable("tradeseeker.msg.bought_many", boughtHere, found.describe()) : found.describe();
 		chat(player, Text.translatable("tradeseeker.msg.bought", what).formatted(Formatting.GREEN));
-		remaining.remove(idOf(found.enchantment()));
+		String id = idOf(found.enchantment());
+		remaining.remove(id);
+		// Got it: off the wanted list for good, so it's never rolled for again.
+		if (ModConfig.INSTANCE.untickBought && ModConfig.INSTANCE.wanted.remove(id) != null) {
+			ModConfig.save();
+			chat(player, Text.translatable("tradeseeker.msg.unticked", Enchantment.getName(found.enchantment(), found.level())).formatted(Formatting.GRAY));
+		}
 		done.add(villager.getUuid());
 		if (remaining.isEmpty()) {
+			Sounds.allDone();
 			stop(client, Text.translatable("tradeseeker.msg.all_done").formatted(Formatting.GREEN, Formatting.BOLD));
 			return;
 		}
+		// (Bought by hand, the purchase sound has played already.)
+		if (ModConfig.INSTANCE.autoBuy) Sounds.bought();
 		if (client.currentScreen instanceof MerchantScreen) player.closeHandledScreen();
 		if (nextVillager(client)) {
 			chat(player, Text.translatable("tradeseeker.msg.next_villager", remainingText()).formatted(Formatting.AQUA));
@@ -545,14 +602,16 @@ public final class Reroller {
 			return;
 		}
 		PlayerInventory inventory = player.getInventory();
-		int slot = slotOf(inventory, Items.LECTERN);
-		if (slot < 0) {
+		// A lectern in the offhand is placed from there, with no hotbar shuffling.
+		boolean offhand = player.getOffHandStack().isOf(Items.LECTERN);
+		int slot = offhand ? -1 : slotOf(inventory, Items.LECTERN);
+		if (!offhand && slot < 0) {
 			// The broken lectern may still be flying to us.
 			status(player, Text.translatable("tradeseeker.status.wait_lectern"));
 			if (ticksInState > 80) fail(client, "tradeseeker.msg.no_lectern_item");
 			return;
 		}
-		if (slot >= PlayerInventory.getHotbarSize()) {
+		if (!offhand && slot >= PlayerInventory.getHotbarSize()) {
 			int hotbar = inventory.getSwappableHotbarSlot();
 			client.interactionManager.clickSlot(player.playerScreenHandler.syncId, slot, hotbar, SlotActionType.SWAP, player);
 			return;
@@ -562,10 +621,11 @@ public final class Reroller {
 			fail(client, "tradeseeker.msg.spot_taken");
 			return;
 		}
-		inventory.setSelectedSlot(slot);
+		Hand hand = offhand ? Hand.OFF_HAND : Hand.MAIN_HAND;
+		if (!offhand) inventory.setSelectedSlot(slot);
 		lookAt(player, hit.getPos());
-		client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
-		player.swingHand(Hand.MAIN_HAND);
+		client.interactionManager.interactBlock(player, hand, hit);
+		player.swingHand(hand);
 		enter(State.CONFIRM_PLACE);
 		delay = 0;
 	}
@@ -587,9 +647,12 @@ public final class Reroller {
 		return coming;
 	}
 
+	/** How many of the item you carry, offhand included. */
 	private static int count(PlayerInventory inventory, net.minecraft.item.Item item) {
 		int n = 0;
 		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) if (inventory.getStack(i).isOf(item)) n += inventory.getStack(i).getCount();
+		ItemStack off = inventory.getStack(PlayerInventory.OFF_HAND_SLOT);
+		if (off.isOf(item)) n += off.getCount();
 		return n;
 	}
 
@@ -611,7 +674,11 @@ public final class Reroller {
 	private static void confirmPlace(MinecraftClient client, ClientPlayerEntity player) {
 		if (client.world.getBlockState(lectern).isOf(Blocks.LECTERN)) {
 			attempts = 0;
-			rolls++;
+			if (!retrying) {
+				rolls++;
+				jobTries = 0;
+			}
+			retrying = false;
 			neighbours = joblessNeighbours(client);
 			enter(State.WAIT_JOB);
 			return;
@@ -627,6 +694,8 @@ public final class Reroller {
 
 	private static void waitJob(MinecraftClient client, ClientPlayerEntity player) {
 		if (isLibrarian(villager)) {
+			TradeSeekerClient.LOGGER.info("Job taken after {} s (try {})", String.format(java.util.Locale.ROOT, "%.1f", ticksInState / 20.0), jobTries + 1);
+			jobTries = 0;
 			enter(State.OPEN);
 			delay = Math.max(delay, 6);
 			return;
@@ -639,15 +708,59 @@ public final class Reroller {
 			enter(State.PLACE);
 			return;
 		}
-		// A neighbour taking a job may just have found its own lectern; it's only to blame if ours stays jobless.
-		for (Entity entity : client.world.getEntities()) {
-			if (ticksInState > 300 && entity instanceof VillagerEntity v && neighbours.contains(v.getUuid()) && isLibrarian(v)) {
-				fail(client, "tradeseeker.msg.stolen");
+		// Asleep: it can still find the lectern, but give it the time; the clock doesn't run.
+		if (villager.isSleeping()) {
+			ticksInState = Math.min(ticksInState, 200);
+			status(player, Text.translatable("tradeseeker.status.asleep"));
+			return;
+		}
+		int seconds = ticksInState / 20;
+		status(player, jobTries == 0 ? Text.translatable("tradeseeker.status.wait_job", rolls, seconds)
+				: Text.translatable("tradeseeker.status.wait_job_retry", rolls, seconds, jobTries + 1, JOB_TRIES));
+		// A villager looks for a job every 1-2 s, so a healthy one takes the lectern within a few seconds. Longer means
+		// another jobless villager (within 48 blocks) may have reserved it, or a failed path made it back off (up to
+		// 20 s). Breaking and placing it again cancels such a reservation and starts a fresh search.
+		if (ticksInState > Math.round(ModConfig.INSTANCE.jobWait * 20)) {
+			if (++jobTries >= JOB_TRIES) {
+				failJob(client, player);
 				return;
 			}
+			TradeSeekerClient.LOGGER.info("No job after {} s; placing the lectern again (try {} of {})", ModConfig.INSTANCE.jobWait, jobTries + 1, JOB_TRIES);
+			retrying = true;
+			enter(State.BREAK);
 		}
-		status(player, Text.translatable("tradeseeker.status.wait_job", rolls));
-		if (ticksInState > 1200) fail(client, "tradeseeker.msg.no_job");
+	}
+
+	private static void failJob(MinecraftClient client, ClientPlayerEntity player) {
+		List<Text> reasons = jobProblems(client, villager, lectern);
+		lastProblems = reasons;
+		if (reasons.isEmpty()) reasons.add(Text.translatable("tradeseeker.job.unknown"));
+		fail(client, "tradeseeker.msg.no_job", JOB_TRIES);
+		for (Text reason : reasons) chat(player, Text.literal("• ").append(reason).formatted(Formatting.GRAY));
+	}
+
+	/** Roughly how long until villagers get up (they rise around sunrise, time 0 of the day). */
+	static String untilMorning(MinecraftClient client) {
+		long time = client.world.getTimeOfDay() % 24000;
+		long ticks = (24000 - time) % 24000;
+		return Odds.duration(ticks / 20.0);
+	}
+
+	/** Why a villager might not take this lectern, as far as the client can see. */
+	public static List<Text> jobProblems(MinecraftClient client, VillagerEntity v, BlockPos pos) {
+		List<Text> reasons = new ArrayList<>();
+		// It must reach a spot right beside the lectern (not diagonal, not a block up or down).
+		if (v.getBlockPos().getManhattanDistance(pos) != 1) reasons.add(Text.translatable("tradeseeker.job.not_beside"));
+		VillagerEntity nearest = null;
+		int rivals = 0;
+		for (Entity entity : client.world.getEntities()) {
+			if (!(entity instanceof VillagerEntity other) || other == v || other.isBaby() || !isJobless(other)) continue;
+			if (other.squaredDistanceTo(Vec3d.ofCenter(pos)) > 48 * 48) continue;
+			rivals++;
+			if (nearest == null || other.squaredDistanceTo(Vec3d.ofCenter(pos)) < nearest.squaredDistanceTo(Vec3d.ofCenter(pos))) nearest = other;
+		}
+		if (nearest != null) reasons.add(Text.translatable("tradeseeker.job.rivals", rivals, nearest.getBlockPos().toShortString()));
+		return reasons;
 	}
 
 	// ---- Reading trades ----
@@ -811,9 +924,8 @@ public final class Reroller {
 	}
 
 	private static void ding(MinecraftClient client, boolean good) {
-		if (!ModConfig.INSTANCE.sound) return;
-		client.getSoundManager().play(PositionedSoundInstance.ui(
-				good ? SoundEvents.ENTITY_PLAYER_LEVELUP : SoundEvents.BLOCK_NOTE_BLOCK_BASS.value(), good ? 1.0f : 0.6f));
+		if (good) Sounds.found(false);
+		else Sounds.problem();
 	}
 
 	// ---- For the menu ----
@@ -867,13 +979,23 @@ public final class Reroller {
 		} else {
 			checks.add(new Check(Status.OK, Text.translatable(isLibrarian(v) ? "tradeseeker.check.librarian" : "tradeseeker.check.jobless"),
 					Text.translatable("tradeseeker.check.villager.tip")));
+			if (v.isSleeping()) {
+				checks.add(new Check(Status.WARN, Text.translatable("tradeseeker.check.asleep"), Text.translatable("tradeseeker.check.asleep.tip", untilMorning(client))));
+			}
 			BlockPos pos = running() ? lectern : lecternFor(client, v, true);
 			if (pos == null) {
 				checks.add(new Check(Status.BAD, Text.translatable("tradeseeker.check.no_lectern"), Text.translatable("tradeseeker.msg.no_lectern")));
 			} else if (!canCatchDrop(player, pos)) {
-				checks.add(new Check(Status.WARN, Text.translatable("tradeseeker.check.far_lectern"), Text.translatable("tradeseeker.msg.step_closer")));
+				// It sneaks up to the lectern by itself before breaking it, so this is fine.
+				checks.add(new Check(Status.OK, Text.translatable("tradeseeker.check.far_lectern"), Text.translatable("tradeseeker.check.far_lectern.tip")));
 			} else {
 				checks.add(new Check(Status.OK, Text.translatable("tradeseeker.check.lectern"), Text.translatable("tradeseeker.check.lectern.tip")));
+			}
+			if (pos != null && isJobless(v)) {
+				// Only a jobless villager still has to take the lectern; then these matter.
+				for (Text problem : jobProblems(client, v, pos)) {
+					checks.add(new Check(Status.WARN, Text.translatable("tradeseeker.check.job_risk"), problem));
+				}
 			}
 		}
 
@@ -917,6 +1039,10 @@ public final class Reroller {
 
 	static VillagerEntity target() {
 		return villager;
+	}
+
+	static int jobTries() {
+		return jobTries;
 	}
 
 	static Book lastFound() {
