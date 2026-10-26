@@ -132,7 +132,6 @@ final class SelfTest {
 					s.testOptions(false);
 				}
 				// -Dtradeseeker.selftest.menu=true: just the menu screenshots, for quick looks at the layout.
-				if (tick == 365 && Boolean.getBoolean("tradeseeker.selftest.menu")) finish(client);
 				if (tick == 245) {
 					client.setScreen(null);
 					// Stop when hurt: start on a book no librarian sells, then take a little damage.
@@ -151,6 +150,8 @@ final class SelfTest {
 				if (tick == 370) {
 					want("minecraft:protection", 9, 1, 64);
 					config.maxRolls = 3;
+					// The shortest wait for the job you can set.
+					config.jobWait = 0.5;
 					aimAt(client, villager(client, A));
 					Reroller.start(client);
 					next("limit");
@@ -159,13 +160,19 @@ final class SelfTest {
 			case "limit" -> {
 				if (Reroller.running() && since < 6000) return;
 				VillagerEntity v = villager(client, A);
-				check("it stops at the re-roll limit (" + Reroller.rolls() + " of 3)", !Reroller.running() && Reroller.rolls() == 3);
+				check("it stops at the re-roll limit, with a 0.5 s wait for the job (" + Reroller.rolls() + " of 3)", !Reroller.running() && Reroller.rolls() == 3);
+				config.jobWait = 0;
 				check("the lectern is back and the villager is a librarian again", client.world.getBlockState(lectern(A)).isOf(Blocks.LECTERN)
 						&& v != null && isLibrarian(v));
 				check("nothing was bought while re-rolling", xp(client, A) == 0 && books(client, null, 1) == 0);
 				// (About 1 in 100 lands out of reach even with the trapdoor.)
 				check("the broken lectern is picked back up (" + lecterns(client) + " of 16 spares left)", lecterns(client) >= 15);
 				config.maxRolls = 0;
+				// -Dtradeseeker.selftest.menu=true: the quick run ends here.
+				if (Boolean.getBoolean("tradeseeker.selftest.menu")) {
+					finish(client);
+					return;
+				}
 				commonBooks();
 				aimAt(client, villager(client, A));
 				Reroller.start(client);
@@ -310,6 +317,7 @@ final class SelfTest {
 						&& c.detail().getString().contains("beside"));
 				check("the checklist warns that a villager not right beside its lectern may never take it", warned);
 				want("minecraft:protection", 9, 1, 64);
+				config.jobWait = 5.5;
 				aimAt(client, e);
 				Reroller.start(client);
 				next("job");
@@ -323,6 +331,7 @@ final class SelfTest {
 				check("…then it says why (" + Reroller.lastProblems.size() + " reasons)", named);
 				command(client, "kill @e[type=minecraft:villager,x=2,y=-61,z=14,dx=0,dy=4,dz=0]");
 				command(client, "setblock 1 -60 14 minecraft:air");
+				config.jobWait = 0;
 				command(client, "clear @p minecraft:lectern");
 				command(client, "give @p minecraft:lectern 16");
 				command(client, "tp @p 0.69 -60 18.5 -90 20");
@@ -467,6 +476,8 @@ final class SelfTest {
 					check("settings survive a restart", ModConfig.INSTANCE.autoBuy == before.autoBuy
 							&& ModConfig.INSTANCE.wanted.equals(before.wanted) && ModConfig.INSTANCE.secondsPerRoll == before.secondsPerRoll);
 					check("it learned its pace (" + ModConfig.INSTANCE.secondsPerRoll + " s per re-roll)", ModConfig.INSTANCE.secondsPerRoll != 3.0);
+					check("Auto learned how long villagers take the job (waits " + Reroller.jobWait() + " s, from " + ModConfig.INSTANCE.jobTakeTimes.size()
+							+ " takes)", ModConfig.INSTANCE.jobTakeTimes.size() >= 5 && Reroller.jobWait() >= 1.5 && Reroller.jobWait() < 5.5);
 					finish(client);
 				}
 			}

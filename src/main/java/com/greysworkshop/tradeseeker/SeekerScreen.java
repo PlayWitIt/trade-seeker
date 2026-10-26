@@ -818,15 +818,18 @@ public final class SeekerScreen extends Screen {
 			}
 			y += 21;
 			context.drawText(font, Text.translatable("tradeseeker.opt.job_wait"), x, y + 4, TEXT, false);
-			Text wait = Text.literal((config.jobWait % 1 == 0 ? Integer.toString((int) config.jobWait) : Double.toString(config.jobWait)) + " s");
-			stepper(context, x1 - 10 - 84, y, x1 - 10, wait, mouseX, mouseY, step -> {
-				config.jobWait = MathHelper.clamp(config.jobWait + (step > 0 ? 0.5 : -0.5), 3, 30);
+			Text wait = config.jobWait == 0 ? Text.translatable("tradeseeker.opt.job_wait.auto", seconds(Reroller.jobWait()))
+					: Text.literal(seconds(config.jobWait) + " s");
+			// Auto, then 0.5 s to 30 s in half seconds.
+			stepper(context, x1 - 10 - 96, y, x1 - 10, wait, mouseX, mouseY, step -> {
+				config.jobWait = config.jobWait == 0 ? (step > 0 ? 0.5 : 0) : config.jobWait + (step > 0 ? 0.5 : -0.5);
+				config.jobWait = config.jobWait < 0.5 ? 0 : Math.min(30, config.jobWait);
 				ModConfig.save();
 			}, "tradeseeker.opt.job_wait.tip");
 			y += 20;
 			context.drawText(font, Text.translatable("tradeseeker.opt.limit"), x, y + 4, TEXT, false);
 			Text limit = config.maxRolls == 0 ? Text.translatable("tradeseeker.opt.limit.never") : Text.literal(Integer.toString(config.maxRolls));
-			stepper(context, x1 - 10 - 84, y, x1 - 10, limit, mouseX, mouseY, step -> {
+			stepper(context, x1 - 10 - 96, y, x1 - 10, limit, mouseX, mouseY, step -> {
 				config.maxRolls = Math.max(0, config.maxRolls + step);
 				ModConfig.save();
 			}, "tradeseeker.opt.limit.tip");
@@ -913,6 +916,10 @@ public final class SeekerScreen extends Screen {
 		Supplier<List<Text>> tip = () -> List.of(Text.translatable(tipKey));
 		hit(x0, y, x0 + 16, y + h, () -> step.by(hasShiftDown() ? -50 : -10), tip);
 		hit(x1 - 16, y, x1, y + h, () -> step.by(hasShiftDown() ? 50 : 10), tip);
+	}
+
+	private static String seconds(double s) {
+		return s % 1 == 0 ? Integer.toString((int) s) : Double.toString(s);
 	}
 
 	private static boolean hasShiftDown() {

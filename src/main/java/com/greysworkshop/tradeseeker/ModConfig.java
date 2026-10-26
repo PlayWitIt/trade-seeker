@@ -93,8 +93,10 @@ public final class ModConfig {
 	public boolean remind = true;
 	/** Take a book off the wanted list once it's bought, so it isn't rolled for again. */
 	public boolean untickBought = true;
-	/** Seconds to wait for the villager to take the lectern before placing it again. */
-	public double jobWait = 5.5;
+	/** Seconds to wait for the villager to take the lectern before placing it again; 0 = Auto (learned). */
+	public double jobWait = 0;
+	/** Recent times (seconds) villagers took to take the lectern, for Auto. */
+	public java.util.List<Double> jobTakeTimes = new java.util.ArrayList<>();
 	/** Say in chat when a wanted book turns up at the wrong level or price. */
 	public boolean nearMisses = true;
 	/** Stop if you take damage (on an anarchy server, someone may be at you). */
@@ -123,7 +125,8 @@ public final class ModConfig {
 				if (loaded.speed == null) loaded.speed = Speed.NORMAL;
 				if (loaded.foundSound == null) loaded.foundSound = Sounds.Style.CHIME;
 				loaded.volume = Math.max(0, Math.min(100, loaded.volume));
-				if (!(loaded.jobWait >= 3 && loaded.jobWait <= 30)) loaded.jobWait = 5.5;
+				if (!(loaded.jobWait == 0 || loaded.jobWait >= 0.5 && loaded.jobWait <= 30)) loaded.jobWait = 0;
+				if (loaded.jobTakeTimes == null) loaded.jobTakeTimes = new java.util.ArrayList<>();
 				if (loaded.tab == null) loaded.tab = "ALL";
 				if (!(loaded.secondsPerRoll >= 0.5 && loaded.secondsPerRoll <= 60)) loaded.secondsPerRoll = 3.0;
 				loaded.maxRolls = Math.max(0, loaded.maxRolls);

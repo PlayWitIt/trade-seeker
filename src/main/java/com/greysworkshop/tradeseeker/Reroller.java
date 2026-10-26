@@ -78,7 +78,9 @@ public final class Reroller {
 	private static Book found;
 	private static Set<UUID> neighbours = Set.of();
 	private static boolean stepping;
-	private static final int JOB_TRIES = 8;
+	/** At least this many placements, and at least this long in all, before giving up on a villager taking the lectern. */
+	private static final int MIN_JOB_TRIES = 8;
+	private static final double JOB_GIVE_UP_SECONDS = 40;
 	/** Lectern placements while waiting for the job; the next one is a retry, not a new re-roll. */
 	private static int jobTries;
 	private static boolean retrying;
@@ -847,6 +849,7 @@ public final class Reroller {
 	private static void waitJob(MinecraftClient client, ClientPlayerEntity player) {
 		if (isLibrarian(villager)) {
 			TradeSeekerClient.LOGGER.info("Job taken after {} s (try {})", String.format(java.util.Locale.ROOT, "%.1f", ticksInState / 20.0), jobTries + 1);
+			if (jobTries == 0) learnJobTake(ticksInState / 20.0);
 			jobTries = 0;
 			enter(State.OPEN);
 			delay = Math.max(delay, 6);
@@ -862,26 +865,54 @@ public final class Reroller {
 		}
 		int seconds = ticksInState / 20;
 		status(player, jobTries == 0 ? Text.translatable("tradeseeker.status.wait_job", rolls, seconds)
-				: Text.translatable("tradeseeker.status.wait_job_retry", rolls, seconds, jobTries + 1, JOB_TRIES));
+				: Text.translatable("tradeseeker.status.wait_job_retry", rolls, seconds, jobTries + 1, jobTriesAllowed()));
 		// A villager looks for a job every 1-2 s, so a healthy one takes the lectern within a few seconds. Longer means
 		// another jobless villager (within 48 blocks) may have reserved it, or a failed path made it back off (up to
 		// 20 s). Breaking and placing it again cancels such a reservation and starts a fresh search.
-		if (ticksInState > Math.round(ModConfig.INSTANCE.jobWait * 20)) {
-			if (++jobTries >= JOB_TRIES) {
+		if (ticksInState > Math.round(jobWait() * 20)) {
+			if (++jobTries >= jobTriesAllowed()) {
 				failJob(client, player);
 				return;
 			}
-			TradeSeekerClient.LOGGER.info("No job after {} s; placing the lectern again (try {} of {})", ModConfig.INSTANCE.jobWait, jobTries + 1, JOB_TRIES);
+			TradeSeekerClient.LOGGER.info("No job after {} s; placing the lectern again (try {} of {})", jobWait(), jobTries + 1, jobTriesAllowed());
 			retrying = true;
 			enter(State.BREAK);
 		}
+	}
+
+	/** More tries with a short wait, so a slow villager always gets about 40 seconds. */
+	private static int jobTriesAllowed() {
+		return Math.max(MIN_JOB_TRIES, (int) Math.ceil(JOB_GIVE_UP_SECONDS / jobWait()));
+	}
+
+	/**
+	 * Seconds to wait for the job before placing the lectern again. Auto learns from how fast villagers have taken it
+	 * here: the slow end (90%) of recent first-try takes, plus half again, kept between 1.5 and 8 s. Until it has
+	 * seen a few, 5.5 s.
+	 */
+	public static double jobWait() {
+		ModConfig config = ModConfig.INSTANCE;
+		if (config.jobWait > 0) return config.jobWait;
+		List<Double> times = config.jobTakeTimes;
+		if (times.size() < 5) return 5.5;
+		List<Double> sorted = new ArrayList<>(times);
+		java.util.Collections.sort(sorted);
+		double p90 = sorted.get(Math.min(sorted.size() - 1, (int) Math.ceil(sorted.size() * 0.9) - 1));
+		return Math.round(MathHelper.clamp(p90 * 1.5 + 0.5, 1.5, 8) * 10) / 10.0;
+	}
+
+	/** Remembers how long a villager took to take the lectern (first try only, so retries don't skew it). */
+	private static void learnJobTake(double seconds) {
+		List<Double> times = ModConfig.INSTANCE.jobTakeTimes;
+		times.add(Math.round(seconds * 10) / 10.0);
+		while (times.size() > 40) times.remove(0);
 	}
 
 	private static void failJob(MinecraftClient client, ClientPlayerEntity player) {
 		List<Text> reasons = jobProblems(client, villager, lectern);
 		lastProblems = reasons;
 		if (reasons.isEmpty()) reasons.add(Text.translatable("tradeseeker.job.unknown"));
-		fail(client, "tradeseeker.msg.no_job", JOB_TRIES);
+		fail(client, "tradeseeker.msg.no_job", jobTriesAllowed());
 		for (Text reason : reasons) chat(player, Text.literal("• ").append(reason).formatted(Formatting.GRAY));
 	}
 
