@@ -46,5 +46,12 @@ loom {
 			vmArgs "-Dtradeseeker.selftest=true", "-Xmx1536m"
 			runDir "run"
 		}
+		menuTest {
+			client()
+			name = "Menu Test"
+			vmArgs "-Dtradeseeker.selftest=true", "-Dtradeseeker.selftest.menu=true", "-Xmx1536m"
+			programArgs "--width", "1280", "--height", "720"
+			runDir "run"
+		}
 	}
 }

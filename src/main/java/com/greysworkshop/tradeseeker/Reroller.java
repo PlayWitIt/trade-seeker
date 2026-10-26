@@ -7,6 +7,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ingame.MerchantScreen;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.sound.PositionedSoundInstance;
+import net.minecraft.client.toast.SystemToast;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.ItemEnchantmentsComponent;
 import net.minecraft.enchantment.Enchantment;
@@ -59,6 +60,16 @@ public final class Reroller {
 		}
 	}
 
+	public enum Kind { MATCH, NEAR, OTHER, NO_BOOK }
+
+	/** What one re-roll offered, for the menu's Seen list. */
+	public record Seen(int roll, List<Book> books, Kind kind, Text note) {}
+
+	public enum Status { OK, WARN, BAD }
+
+	/** One line of the menu's ready-to-start checklist. */
+	public record Check(Status status, Text label, Text detail) {}
+
 	private static State state;
 	private static VillagerEntity villager;
 	private static BlockPos lectern;
@@ -70,9 +81,20 @@ public final class Reroller {
 	/** Dropped lecterns (entity ids) that landed out of pickup reach this run. */
 	private static Set<Integer> lostDrops = new HashSet<>();
 	/** This run's wanted books; one is crossed off when it's bought, and the rest are sought from the next villager. */
-	private static Map<String, Integer> remaining = new LinkedHashMap<>();
+	private static Map<String, ModConfig.Want> remaining = new LinkedHashMap<>();
+	/** Newest first, this run only. */
+	private static final List<Seen> seen = new ArrayList<>();
+	private static final List<Book> bought = new ArrayList<>();
+	private static int boughtHere;
+	private static float lastHealth;
+	private static long endedAt;
 	/** Villagers this run has finished with (bought from, or found already traded). */
 	private static Set<UUID> done = new HashSet<>();
+	/**
+	 * Each villager's lectern spot. If a run stops with the lectern broken, the villager is left jobless and the
+	 * nearest lectern may be a neighbour's; this puts it back where it was instead.
+	 */
+	private static final Map<UUID, BlockPos> homes = new java.util.HashMap<>();
 	/** What the last roll offered, for the status line. */
 	private static Text lastSeen = Text.empty();
 
@@ -109,16 +131,21 @@ public final class Reroller {
 			chat(player, Text.translatable("tradeseeker.msg.locked").formatted(Formatting.RED));
 			return;
 		}
-		BlockPos pos = findLectern(client, target, true);
+		BlockPos pos = lecternFor(client, target, true);
 		if (pos == null) {
 			chat(player, Text.translatable("tradeseeker.msg.no_lectern").formatted(Formatting.RED));
 			return;
 		}
-		remaining = new LinkedHashMap<>(config.wanted);
+		remaining = new LinkedHashMap<>();
+		config.wanted.forEach((id, w) -> remaining.put(id, w.copy()));
 		done = new HashSet<>();
 		lostDrops = new HashSet<>();
+		seen.clear();
+		bought.clear();
 		rolls = 0;
 		startedAt = System.currentTimeMillis();
+		endedAt = 0;
+		lastHealth = player.getHealth();
 		begin(client, target, pos);
 		chat(player, Text.translatable("tradeseeker.msg.started", pos.toShortString()).formatted(Formatting.GREEN));
 		if (!canCatchDrop(player, pos)) chat(player, Text.translatable("tradeseeker.msg.step_closer").formatted(Formatting.YELLOW));
@@ -136,6 +163,7 @@ public final class Reroller {
 	private static void begin(MinecraftClient client, VillagerEntity target, BlockPos pos) {
 		villager = target;
 		lectern = pos;
+		homes.put(target.getUuid(), pos);
 		found = null;
 		lastSeen = Text.empty();
 		neighbours = joblessNeighbours(client);
@@ -154,7 +182,7 @@ public final class Reroller {
 		for (Entity entity : client.world.getEntities()) {
 			if (!(entity instanceof VillagerEntity v) || v.isBaby() || done.contains(v.getUuid())) continue;
 			if ((!isLibrarian(v) && !isJobless(v)) || v.getVillagerData().level() > 1 || !player.canInteractWithEntity(v, 0.5)) continue;
-			BlockPos pos = findLectern(client, v, false);
+			BlockPos pos = lecternFor(client, v, false);
 			double d = v.squaredDistanceTo(player);
 			if (pos != null && d < bestDistance) {
 				best = v;
@@ -175,7 +203,7 @@ public final class Reroller {
 			if (!first) text.append(", ");
 			first = false;
 			var entry = registry.getEntry(net.minecraft.util.Identifier.of(e.getKey()));
-			text.append(entry.isPresent() ? Enchantment.getName(entry.get(), e.getValue()) : Text.literal(e.getKey()));
+			text.append(entry.isPresent() ? Enchantment.getName(entry.get(), e.getValue().minLevel) : Text.literal(e.getKey()));
 		}
 		return text;
 	}
@@ -186,7 +214,19 @@ public final class Reroller {
 		if (client.interactionManager != null) client.interactionManager.cancelBlockBreaking();
 		state = null;
 		villager = null;
+		endedAt = System.currentTimeMillis();
+		learnPace();
 		if (client.player != null && why != null) chat(client.player, why);
+	}
+
+	/** Keeps the time estimates honest: blends this run's seconds per re-roll into the saved figure. */
+	private static void learnPace() {
+		if (rolls < 5) return;
+		double measured = (endedAt - startedAt) / 1000.0 / rolls;
+		if (measured < 0.5 || measured > 60) return;
+		ModConfig config = ModConfig.INSTANCE;
+		config.secondsPerRoll = Math.round((config.secondsPerRoll * 0.5 + measured * 0.5) * 100) / 100.0;
+		ModConfig.save();
 	}
 
 	private static void fail(MinecraftClient client, String key, Object... args) {
@@ -198,7 +238,7 @@ public final class Reroller {
 	private static void enter(State next) {
 		state = next;
 		ticksInState = 0;
-		delay = ModConfig.INSTANCE.stepDelay;
+		delay = ModConfig.INSTANCE.speed.delay;
 	}
 
 	// ---- The loop ----
@@ -213,6 +253,11 @@ public final class Reroller {
 		}
 		// Chat, the pause menu, the inventory: wait until it's closed. The trade screen is ours.
 		if (client.currentScreen != null && !(client.currentScreen instanceof MerchantScreen)) return;
+		if (ModConfig.INSTANCE.stopWhenHurt && player.getHealth() < lastHealth - 0.01f) {
+			fail(client, "tradeseeker.msg.hurt");
+			return;
+		}
+		lastHealth = player.getHealth();
 		if (villager.isRemoved() || !villager.isAlive()) {
 			fail(client, "tradeseeker.msg.villager_gone");
 			return;
@@ -285,10 +330,16 @@ public final class Reroller {
 			fail(client, "tradeseeker.msg.locked");
 			return;
 		}
+		if (remaining.isEmpty()) {
+			player.closeHandledScreen();
+			stop(client, Text.translatable("tradeseeker.msg.nothing_left").formatted(Formatting.YELLOW));
+			return;
+		}
 		List<Book> books = books(handler.getRecipes());
 		Book match = firstWanted(books);
 		lastSeen = describeAll(books);
 		TradeSeekerClient.LOGGER.info("Re-roll {}: {}", rolls, lastSeen.getString());
+		record(player, books, match);
 		if (match != null) {
 			found(client, player, screen, match);
 			return;
@@ -304,6 +355,32 @@ public final class Reroller {
 		enter(State.STEP);
 	}
 
+	private static void record(ClientPlayerEntity player, List<Book> books, Book match) {
+		Kind kind = books.isEmpty() ? Kind.NO_BOOK : Kind.OTHER;
+		Text note = Text.empty();
+		if (match != null) {
+			kind = Kind.MATCH;
+		} else {
+			for (Book book : books) {
+				ModConfig.Want w = remaining.get(idOf(book.enchantment()));
+				if (w == null) continue;
+				kind = Kind.NEAR;
+				note = book.level() < w.minLevel
+						? Text.translatable("tradeseeker.near.level", SeekerScreen.roman(book.level()), SeekerScreen.roman(w.minLevel))
+						: book.price() > w.maxPrice
+								? Text.translatable("tradeseeker.near.dear", book.price(), w.maxPrice)
+								: Text.translatable("tradeseeker.near.cheap", book.price(), w.minPrice);
+				if (ModConfig.INSTANCE.nearMisses) {
+					chat(player, Text.translatable("tradeseeker.msg.near_miss", Enchantment.getName(book.enchantment(), book.level()), note)
+							.formatted(Formatting.GOLD));
+				}
+				break;
+			}
+		}
+		seen.add(0, new Seen(rolls, books, kind, note));
+		if (seen.size() > 200) seen.remove(seen.size() - 1);
+	}
+
 	private static void found(MinecraftClient client, ClientPlayerEntity player, MerchantScreen screen, Book book) {
 		found = book;
 		select(client, screen, book.index());
@@ -311,6 +388,9 @@ public final class Reroller {
 		chat(player, Text.translatable("tradeseeker.msg.found", book.describe(), rolls, seconds / 60, seconds % 60)
 				.formatted(Formatting.GREEN, Formatting.BOLD));
 		ding(client, true);
+		SystemToast.show(client.getToastManager(), SystemToast.Type.PERIODIC_NOTIFICATION,
+				Text.translatable("tradeseeker.toast.found"), book.describe());
+		boughtHere = 0;
 		if (ModConfig.INSTANCE.autoBuy) {
 			enter(State.BUY);
 		} else {
@@ -318,35 +398,59 @@ public final class Reroller {
 		}
 	}
 
+	/**
+	 * Buys the found book: exactly one, or with "buy as many as I can afford", one at a time (a shift-click only spends
+	 * the stack in the payment slot), refilling the payment from the inventory, until something runs out.
+	 */
 	private static void buy(MinecraftClient client, ClientPlayerEntity player) {
 		if (!(client.currentScreen instanceof MerchantScreen screen)) {
-			fail(client, "tradeseeker.msg.buy_closed");
+			if (boughtHere > 0) finishBuying(client, player);
+			else fail(client, "tradeseeker.msg.buy_closed");
 			return;
 		}
 		MerchantScreenHandler handler = screen.getScreenHandler();
 		ItemStack result = handler.getSlot(2).getStack();
-		if (result.isEmpty()) {
-			// Nothing in the result slot: the inventory hasn't got the emeralds and book for it.
-			stop(client, Text.translatable("tradeseeker.msg.cant_afford").formatted(Formatting.YELLOW));
+		int free = freeSlot(handler);
+		if (result.isEmpty() || free < 0) {
+			if (boughtHere > 0) {
+				finishBuying(client, player);
+			} else {
+				// Nothing in the result slot: the inventory hasn't got the emeralds and book for it.
+				stop(client, Text.translatable(free < 0 ? "tradeseeker.msg.inventory_full" : "tradeseeker.msg.cant_afford").formatted(Formatting.YELLOW));
+			}
 			return;
 		}
-		// One plain click takes exactly one (shift-click would buy as many as you can afford), then it goes in a free slot.
+		// A plain click takes exactly one; then it goes in a free slot (books don't stack).
 		client.interactionManager.clickSlot(handler.syncId, 2, 0, SlotActionType.PICKUP, player);
-		for (int i = 3; i < handler.slots.size(); i++) {
-			if (!handler.getSlot(i).hasStack()) {
-				client.interactionManager.clickSlot(handler.syncId, i, 0, SlotActionType.PICKUP, player);
-				break;
-			}
-		}
+		client.interactionManager.clickSlot(handler.syncId, free, 0, SlotActionType.PICKUP, player);
+		boughtHere++;
+		bought.add(found);
 		logBought(found);
-		chat(player, Text.translatable("tradeseeker.msg.bought", found.describe()).formatted(Formatting.GREEN));
+		if (!ModConfig.INSTANCE.buyMax) {
+			finishBuying(client, player);
+			return;
+		}
+		status(player, Text.translatable("tradeseeker.status.buying", boughtHere, found.describe()));
+		// Refill the payment slots from the inventory, as clicking the trade again would.
+		select(client, screen, found.index());
+		delay = Math.max(2, ModConfig.INSTANCE.speed.delay);
+	}
+
+	private static int freeSlot(MerchantScreenHandler handler) {
+		for (int i = 3; i < handler.slots.size(); i++) if (!handler.getSlot(i).hasStack()) return i;
+		return -1;
+	}
+
+	private static void finishBuying(MinecraftClient client, ClientPlayerEntity player) {
+		Text what = boughtHere > 1 ? Text.translatable("tradeseeker.msg.bought_many", boughtHere, found.describe()) : found.describe();
+		chat(player, Text.translatable("tradeseeker.msg.bought", what).formatted(Formatting.GREEN));
 		remaining.remove(idOf(found.enchantment()));
 		done.add(villager.getUuid());
 		if (remaining.isEmpty()) {
 			stop(client, Text.translatable("tradeseeker.msg.all_done").formatted(Formatting.GREEN, Formatting.BOLD));
 			return;
 		}
-		player.closeHandledScreen();
+		if (client.currentScreen instanceof MerchantScreen) player.closeHandledScreen();
 		if (nextVillager(client)) {
 			chat(player, Text.translatable("tradeseeker.msg.next_villager", remainingText()).formatted(Formatting.AQUA));
 		} else {
@@ -564,11 +668,10 @@ public final class Reroller {
 	}
 
 	public static Book firstWanted(List<Book> books) {
-		ModConfig config = ModConfig.INSTANCE;
 		for (Book book : books) {
 			String id = idOf(book.enchantment());
-			Integer min = remaining.get(id);
-			if (min != null && book.level() >= min && config.priceOk(book.price())) return book;
+			ModConfig.Want w = remaining.get(id);
+			if (w != null && w.accepts(book.level(), book.price())) return book;
 		}
 		return null;
 	}
@@ -620,6 +723,22 @@ public final class Reroller {
 					&& v.squaredDistanceTo(Vec3d.ofCenter(lectern)) < 6 * 6) ids.add(v.getUuid());
 		}
 		return ids;
+	}
+
+	/**
+	 * The lectern you're looking at; or else the spot this villager's lectern was in before (still a lectern, or empty
+	 * because a run stopped with it broken); or else the one nearest the villager that you can reach.
+	 */
+	private static BlockPos lecternFor(MinecraftClient client, VillagerEntity target, boolean lookedAt) {
+		if (lookedAt && client.crosshairTarget instanceof BlockHitResult hit && client.world.getBlockState(hit.getBlockPos()).isOf(Blocks.LECTERN)) {
+			return hit.getBlockPos();
+		}
+		BlockPos home = homes.get(target.getUuid());
+		if (home != null && client.player.canInteractWithBlockAt(home, 0)) {
+			BlockState state = client.world.getBlockState(home);
+			if (state.isOf(Blocks.LECTERN) || state.isReplaceable()) return home;
+		}
+		return findLectern(client, target, false);
 	}
 
 	/** The lectern you're looking at, or else the one nearest the villager that you can reach. */
@@ -695,6 +814,99 @@ public final class Reroller {
 		if (!ModConfig.INSTANCE.sound) return;
 		client.getSoundManager().play(PositionedSoundInstance.ui(
 				good ? SoundEvents.ENTITY_PLAYER_LEVELUP : SoundEvents.BLOCK_NOTE_BLOCK_BASS.value(), good ? 1.0f : 0.6f));
+	}
+
+	// ---- For the menu ----
+
+	public static List<Seen> seen() {
+		return seen;
+	}
+
+	public static List<Book> bought() {
+		return bought;
+	}
+
+	/** Seconds since this run started (or how long the last one ran). */
+	public static long elapsedSeconds() {
+		if (startedAt == 0) return 0;
+		return ((state != null || endedAt == 0 ? System.currentTimeMillis() : endedAt) - startedAt) / 1000;
+	}
+
+	/** The books this run is still after (all picked ones when it isn't running). */
+	public static Map<String, ModConfig.Want> remaining() {
+		return remaining;
+	}
+
+	/** The menu changed what's wanted: a run in progress follows along (books it already bought stay crossed off). */
+	public static void wantsChanged() {
+		if (state == null) return;
+		Set<String> got = new HashSet<>();
+		for (Book b : bought) got.add(idOf(b.enchantment()));
+		Map<String, ModConfig.Want> next = new LinkedHashMap<>();
+		ModConfig.INSTANCE.wanted.forEach((id, w) -> {
+			if (!got.contains(id)) next.put(id, w.copy());
+		});
+		remaining = next;
+	}
+
+	/** What's in place for a start, as the menu's checklist shows it. */
+	public static List<Check> preflight(MinecraftClient client) {
+		List<Check> checks = new ArrayList<>();
+		ClientPlayerEntity player = client.player;
+		if (player == null || client.world == null) return checks;
+		ModConfig config = ModConfig.INSTANCE;
+		if (config.wanted.isEmpty()) checks.add(new Check(Status.BAD, Text.translatable("tradeseeker.check.pick"), Text.translatable("tradeseeker.check.pick.tip")));
+
+		VillagerEntity v = running() ? villager : findVillager(client);
+		if (v == null) {
+			checks.add(new Check(Status.BAD, Text.translatable("tradeseeker.check.no_villager"), Text.translatable("tradeseeker.msg.no_villager")));
+		} else if (v.getVillagerData().profession().matchesKey(VillagerProfession.NITWIT)) {
+			checks.add(new Check(Status.BAD, Text.translatable("tradeseeker.check.nitwit"), Text.translatable("tradeseeker.msg.nitwit")));
+		} else if (v.getVillagerData().level() > 1) {
+			checks.add(new Check(Status.BAD, Text.translatable("tradeseeker.check.locked"), Text.translatable("tradeseeker.msg.locked")));
+		} else {
+			checks.add(new Check(Status.OK, Text.translatable(isLibrarian(v) ? "tradeseeker.check.librarian" : "tradeseeker.check.jobless"),
+					Text.translatable("tradeseeker.check.villager.tip")));
+			BlockPos pos = running() ? lectern : lecternFor(client, v, true);
+			if (pos == null) {
+				checks.add(new Check(Status.BAD, Text.translatable("tradeseeker.check.no_lectern"), Text.translatable("tradeseeker.msg.no_lectern")));
+			} else if (!canCatchDrop(player, pos)) {
+				checks.add(new Check(Status.WARN, Text.translatable("tradeseeker.check.far_lectern"), Text.translatable("tradeseeker.msg.step_closer")));
+			} else {
+				checks.add(new Check(Status.OK, Text.translatable("tradeseeker.check.lectern"), Text.translatable("tradeseeker.check.lectern.tip")));
+			}
+		}
+
+		PlayerInventory inventory = player.getInventory();
+		BlockState lecternState = Blocks.LECTERN.getDefaultState();
+		boolean axe = false;
+		for (int i = 0; i < PlayerInventory.getHotbarSize(); i++) axe |= inventory.getStack(i).getMiningSpeedMultiplier(lecternState) > 1;
+		checks.add(axe ? new Check(Status.OK, Text.translatable("tradeseeker.check.axe"), Text.translatable("tradeseeker.check.axe.tip"))
+				: new Check(Status.WARN, Text.translatable("tradeseeker.check.no_axe"), Text.translatable("tradeseeker.check.no_axe.tip")));
+		int spares = count(inventory, Items.LECTERN);
+		checks.add(spares > 0 ? new Check(Status.OK, Text.translatable("tradeseeker.check.spares", spares), Text.translatable("tradeseeker.check.spares.tip"))
+				: new Check(Status.WARN, Text.translatable("tradeseeker.check.no_spares"), Text.translatable("tradeseeker.check.spares.tip")));
+
+		if (config.autoBuy && !config.wanted.isEmpty()) {
+			int emeralds = count(inventory, Items.EMERALD), need = 0;
+			var registry = client.world.getRegistryManager().getOrThrow(net.minecraft.registry.RegistryKeys.ENCHANTMENT);
+			for (var e : config.wanted.entrySet()) {
+				var entry = registry.getEntry(net.minecraft.util.Identifier.of(e.getKey()));
+				if (entry.isEmpty()) continue;
+				boolean treasure = entry.get().isIn(net.minecraft.registry.tag.EnchantmentTags.DOUBLE_TRADE_PRICE);
+				need = Math.max(need, Math.min(e.getValue().maxPrice, Odds.highestPrice(entry.get().value().getMaxLevel(), treasure)));
+			}
+			checks.add(emeralds >= need ? new Check(Status.OK, Text.translatable("tradeseeker.check.emeralds", emeralds), Text.translatable("tradeseeker.check.emeralds.tip", need))
+					: new Check(emeralds == 0 ? Status.BAD : Status.WARN, Text.translatable("tradeseeker.check.emeralds_short", emeralds, need),
+							Text.translatable("tradeseeker.check.emeralds.tip", need)));
+			int books = count(inventory, Items.BOOK);
+			checks.add(books > 0 ? new Check(Status.OK, Text.translatable("tradeseeker.check.books", books), Text.translatable("tradeseeker.check.books.tip"))
+					: new Check(Status.BAD, Text.translatable("tradeseeker.check.no_books"), Text.translatable("tradeseeker.check.books.tip")));
+			if (inventory.getEmptySlot() < 0) {
+				checks.add(new Check(Status.BAD, Text.translatable("tradeseeker.check.full"), Text.translatable("tradeseeker.msg.inventory_full")));
+			}
+		}
+		return checks;
 	}
 
 	// ---- Self-test hooks ----

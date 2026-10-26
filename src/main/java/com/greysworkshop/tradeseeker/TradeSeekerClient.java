@@ -17,7 +17,7 @@ public final class TradeSeekerClient implements ClientModInitializer {
 	public static final String MOD_ID = "tradeseeker";
 	public static final Logger LOGGER = LoggerFactory.getLogger("Trade Seeker");
 
-	private static KeyBinding menuKey;
+	private static KeyBinding menuKey, startKey;
 
 	@Override
 	public void onInitializeClient() {
@@ -25,13 +25,18 @@ public final class TradeSeekerClient implements ClientModInitializer {
 		KeyBinding.Category category = KeyBinding.Category.create(Identifier.of(MOD_ID, "main"));
 		menuKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
 				"key.tradeseeker.menu", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_J, category));
+		startKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+				"key.tradeseeker.start", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_UNKNOWN, category));
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			while (menuKey.wasPressed()) {
+				if (client.currentScreen == null) client.setScreen(new SeekerScreen());
+			}
+			while (startKey.wasPressed()) {
 				if (Reroller.running()) {
 					Reroller.stop(client, Text.translatable("tradeseeker.msg.stopped", Reroller.rolls()).formatted(Formatting.YELLOW));
 				} else if (client.currentScreen == null) {
-					client.setScreen(new SeekerScreen());
+					Reroller.start(client);
 				}
 			}
 			Reroller.tick(client);
