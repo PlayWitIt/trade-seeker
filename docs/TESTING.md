@@ -39,8 +39,9 @@ Read this when the user comes back with results from testing 1.5.0 in their own 
 1. **Multiplayer servers.** The user confirmed 2026-10-29 that it works in multiplayer (server and anticheat not
    known). A strict anticheat might still not like a trade screen staying open behind the pause menu; Speed →
    Careful may help.
-2. **Sneaking up to a far lectern (STEP state) while a menu is open.** It presses movement keys with a screen up;
-   not tested. If it stalls in a hall with the pause menu open, that's the place to look.
+2. **Walking with a menu open.** Self-tested since 1.5.2: the hall moves on to villager B with the pause menu up and
+   keeps re-rolling. Fetching a lost lectern (FETCH/RETURN, 1.5.2) uses the same sneak-walk and is self-tested in
+   the open, not with a menu up.
 3. **Labels.** They're drawn through walls (`notSneaking = true` in `submitLabel`). 1.5.1 added a distance option
    (8/16/24/48, `ModConfig.labelRange`). No line-of-sight check.
 4. **Protect villagers.** 1.5.1: `VillagerGuard` blocks direct hits, sword sweeps (mirrors `canUseSweepAttack`) and
@@ -71,7 +72,11 @@ shows `status.bought_enough`. Repeat cures add nothing: MAJOR_POSITIVE caps at 2
 
 ## Release workflow
 
-Bump `mod_version` in `gradle.properties`, add a section to the README, then commit (with the Co-Authored-By
-trailer). Run `./gradlew runSelfTest` and wait for `RESULT n passed, 0 failed`. Then:
-`git push origin main` and
-`gh release create <ver> build/libs/trade-seeker-<ver>+1.21.11.jar --title trade-seeker --prerelease --target main --notes-file <notes> --generate-notes`
+Bump `mod_version` in `gradle.properties` and update the README. Run `./gradlew runSelfTest` (give it up to 90
+minutes; a slow Mending can stretch the hall) and wait for `RESULT n passed, 0 failed`. Commit as PlayWit Creations
+(the repo's git config), with no attribution trailer. Then:
+`git push origin main`,
+`gh release create <ver> build/libs/trade-seeker-<ver>+1.21.11.jar --title trade-seeker --target main --notes-file <notes> --latest`,
+and upload the jar to Modrinth (project `c0NhgDoJ`, token in `~/.modrinth_token`): POST `/v2/version` with Fabric API
+(`P7dR8mSH`) required, game version 1.21.11, loader fabric; then PATCH `/v3/version/<id>` with
+`{"environment":"client_only"}`.
