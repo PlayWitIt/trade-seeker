@@ -1,4 +1,4 @@
-# Trade Seeker 1.5.x: testing notes (for Claude)
+# Trade Seeker 1.5.x: testing notes
 
 Read this when the user comes back with results from testing 1.5.0 in their own world.
 

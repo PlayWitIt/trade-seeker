@@ -33,6 +33,7 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
 import net.minecraft.village.TradeOffer;
 import net.minecraft.village.TradeOfferList;
 import net.minecraft.village.VillagerProfession;
@@ -51,7 +52,7 @@ import java.util.UUID;
  * A villager's trades only lock once someone trades with it, so it never trades unless told to.
  */
 public final class Reroller {
-	private enum State { OPEN, AWAIT_OFFERS, STEP, BREAK, WAIT_JOBLESS, PLACE, CONFIRM_PLACE, WAIT_JOB, BUY, DECIDE, WAIT_DAY }
+	private enum State { OPEN, AWAIT_OFFERS, STEP, BREAK, WAIT_JOBLESS, PLACE, FETCH, RETURN, CONFIRM_PLACE, WAIT_JOB, BUY, DECIDE, WAIT_DAY }
 
 	/**
 	 * One enchanted book a librarian offers. price is what it settles at for good (what counts for a find); now is what
@@ -99,6 +100,9 @@ public final class Reroller {
 	private static Book found;
 	private static Set<UUID> neighbours = Set.of();
 	private static boolean stepping;
+	/** A dropped lectern it walks over to (entity id), and the spot to walk back to afterwards. */
+	private static int fetching;
+	private static Vec3d home;
 	/** At least this many placements, and at least this long in all, before giving up on a villager taking the lectern. */
 	private static final int MIN_JOB_TRIES = 8;
 	private static final double JOB_GIVE_UP_SECONDS = 40;
@@ -359,6 +363,8 @@ public final class Reroller {
 			case BREAK -> breakLectern(client, player);
 			case WAIT_JOBLESS -> waitJobless(client, player);
 			case PLACE -> place(client, player);
+			case FETCH -> fetch(client, player);
+			case RETURN -> walkBack(client, player);
 			case CONFIRM_PLACE -> confirmPlace(client, player);
 			case WAIT_JOB -> waitJob(client, player);
 			case BUY -> buy(client, player);
@@ -882,6 +888,15 @@ public final class Reroller {
 			status(player, Text.translatable("tradeseeker.status.wait_lectern"));
 			return;
 		}
+		ItemEntity reachable = walkableDrop(client, player);
+		if (reachable != null) {
+			fetching = reachable.getId();
+			home = player.getEntityPos();
+			status(player, Text.translatable("tradeseeker.status.fetch"));
+			enter(State.FETCH);
+			delay = 0;
+			return;
+		}
 		PlayerInventory inventory = player.getInventory();
 		// A lectern in the offhand is placed from there, with no hotbar shuffling.
 		boolean offhand = player.getOffHandStack().isOf(Items.LECTERN);
@@ -911,6 +926,65 @@ public final class Reroller {
 		delay = 0;
 	}
 
+	/**
+	 * A dropped lectern it can walk to and back from: on the floor at your level, within 4 blocks, nothing in the way.
+	 * Sneaking there can't walk off an edge. One in a pod or behind glass isn't (that stays lost).
+	 */
+	private static ItemEntity walkableDrop(MinecraftClient client, ClientPlayerEntity player) {
+		Box near = player.getBoundingBox().expand(4, 0.6, 4);
+		for (ItemEntity item : client.world.getEntitiesByClass(ItemEntity.class, near, i -> i.getStack().isOf(Items.LECTERN))) {
+			if (walkable(client, player, item)) return item;
+		}
+		return null;
+	}
+
+	private static boolean walkable(MinecraftClient client, ClientPlayerEntity player, ItemEntity item) {
+		if (!item.isOnGround() || item.getBoundingBox().intersects(player.getBoundingBox().expand(1, 0.5, 1))) return false;
+		if (Math.abs(item.getY() - player.getY()) > 0.6 || item.squaredDistanceTo(player) > 4.5 * 4.5) return false;
+		// Clear at knee and head height, all the way there.
+		for (double up : new double[] {0.4, 1.5}) {
+			Vec3d from = player.getEntityPos().add(0, up, 0), to = new Vec3d(item.getX(), player.getY() + up, item.getZ());
+			if (client.world.raycast(new RaycastContext(from, to, RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.ANY, player))
+					.getType() != net.minecraft.util.hit.HitResult.Type.MISS) return false;
+		}
+		return true;
+	}
+
+	/** Sneaks over to a reachable dropped lectern until it's picked up, then goes back. */
+	private static void fetch(MinecraftClient client, ClientPlayerEntity player) {
+		Entity item = client.world.getEntityById(fetching);
+		if (item == null || item.isRemoved() || ticksInState > 100) {
+			if (item == null || item.isRemoved()) lostDrops.remove(fetching);
+			TradeSeekerClient.LOGGER.info("Dropped lectern {}; walking back", item == null || item.isRemoved() ? "picked up" : "not reached");
+			enter(State.RETURN);
+			delay = 0;
+			return;
+		}
+		walkTowards(client, player, item.getEntityPos());
+	}
+
+	/** Back to where it stood, so the next drop lands in reach again. */
+	private static void walkBack(MinecraftClient client, ClientPlayerEntity player) {
+		Vec3d d = home.subtract(player.getEntityPos());
+		if (d.horizontalLengthSquared() < 0.1 * 0.1 || ticksInState > 100) {
+			releaseKeys(client);
+			player.setVelocity(0, player.getVelocity().y, 0);
+			enter(State.PLACE);
+			return;
+		}
+		walkTowards(client, player, home);
+	}
+
+	private static void walkTowards(MinecraftClient client, ClientPlayerEntity player, Vec3d to) {
+		Vec3d d = to.subtract(player.getEntityPos());
+		player.setYaw((float) (MathHelper.atan2(d.z, d.x) * MathHelper.DEGREES_PER_RADIAN) - 90);
+		client.options.sneakKey.setPressed(true);
+		// Close in: a tap at a time, so it doesn't overshoot.
+		client.options.forwardKey.setPressed(d.horizontalLengthSquared() > 0.3 * 0.3 || ticksInState % 2 == 0);
+		stepping = true;
+		delay = 0;
+	}
+
 	/** Whether a dropped lectern is still on its way to us. Counts (once) the ones that landed out of reach. */
 	private static boolean awaitDrop(MinecraftClient client, ClientPlayerEntity player) {
 		Box around = new Box(lectern).expand(1.5);
@@ -919,7 +993,7 @@ public final class Reroller {
 		for (ItemEntity item : client.world.getEntitiesByClass(ItemEntity.class, around, i -> i.getStack().isOf(Items.LECTERN))) {
 			if (item.getItemAge() < 12 || item.getBoundingBox().intersects(reach)) {
 				coming = true;
-			} else if (lostDrops.add(item.getId())) {
+			} else if (!walkable(client, player, item) && lostDrops.add(item.getId())) {
 				int spares = count(player.getInventory(), Items.LECTERN);
 				if (lostDrops.size() == 1) chat(player, Text.translatable("tradeseeker.msg.drop_lost", spares).formatted(Formatting.YELLOW));
 				if (spares <= 2) chat(player, Text.translatable("tradeseeker.msg.spares_low", spares).formatted(Formatting.YELLOW));

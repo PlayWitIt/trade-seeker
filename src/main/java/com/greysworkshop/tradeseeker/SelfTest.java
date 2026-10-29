@@ -53,7 +53,11 @@ final class SelfTest {
 	private static boolean started, escaped, night;
 	private static int rollsAsleep, hurtChecked, settledAt;
 	private static float healthBefore;
-	private static int handBefore, guardSlot;
+	private static int handBefore, guardSlot, boughtOutPrice;
+	private static Reroller.Book buyMaxBook;
+	private static Vec3d dropAt;
+	/** The hall's switch from villager A to B, which walks to B's lectern, happens with the pause menu up. */
+	private static int stepMenuAt, stepMenuRolls;
 	/** Where the "don't let me hit villagers" checks put their villager, out of the pods. */
 	private static final net.minecraft.util.math.Box GUARD_AREA = new net.minecraft.util.math.Box(-4, -61, 21, -1, -57, 24);
 	private static int tick = -1, phaseStart, passed, failed, booksBefore;
@@ -182,7 +186,21 @@ final class SelfTest {
 				}
 			}
 			case "limit" -> {
+				// A lectern lying on open floor 2.5 blocks off (as one that bounced out of a hall might): it fetches it, and
+				// comes back to its spot.
+				if (dropAt == null && Reroller.running() && "WAIT_JOB".equals(Reroller.stateName())) {
+					dropAt = client.player.getEntityPos();
+					command(client, "summon minecraft:item " + (dropAt.x - 2.5) + " -60.0 " + dropAt.z + " {Item:{id:\"minecraft:lectern\",count:1},PickupDelay:0}");
+				}
 				if (Reroller.running() && since < 6000) return;
+				if (dropAt != null) {
+					boolean gone = client.world.getEntitiesByClass(net.minecraft.entity.ItemEntity.class, client.player.getBoundingBox().expand(5), i -> true).isEmpty();
+					double off = Math.sqrt(client.player.getEntityPos().subtract(dropAt).horizontalLengthSquared());
+					check("a lectern dropped on open floor is fetched (" + (gone ? "picked up" : "still there") + "), and it walks back to its spot ("
+							+ String.format(java.util.Locale.ROOT, "%.2f", off) + " blocks off)", gone && off < 0.25);
+				} else {
+					check("a lectern dropped on open floor is fetched (the run ended first)", false);
+				}
 				VillagerEntity v = villager(client, A);
 				check("it stops at the re-roll limit, with a 0.5 s wait for the job (" + Reroller.rolls() + " of 3)", !Reroller.running() && Reroller.rolls() == 3);
 				config.jobWait = 0;
@@ -248,11 +266,44 @@ final class SelfTest {
 				check("buy as many as I can afford buys until something runs out, or one more would raise the price (" + got + " of " + expected + ")",
 						b != null && got == expected);
 				check("…and every one was a real trade (" + xp(client, C) + " xp)", xp(client, C) == got);
+				buyMaxBook = b;
 				next("buymax_cleanup");
 			}
 			case "buymax_cleanup" -> {
+				// The villager restocks (on the server, as it does at its lectern), then its trades are opened by hand: the
+				// book must cost what it did, since buying stopped before it could raise the price.
+				VillagerEntity c = villager(client, C);
+				if (since == 20 && c != null) {
+					java.util.UUID id = c.getUuid();
+					MinecraftServer server = client.getServer();
+					server.execute(() -> {
+						if (server.getOverworld().getEntity(id) instanceof VillagerEntity sv) {
+							// The game's own rule, on a copy: buying all 12 would have raised it.
+							for (net.minecraft.village.TradeOffer o : sv.getOffers()) {
+								if (!o.getSellItem().isOf(Items.ENCHANTED_BOOK)) continue;
+								net.minecraft.village.TradeOffer out = o.copy();
+								while (out.getUses() < out.getMaxUses()) out.use();
+								out.updateDemandBonus();
+								boughtOutPrice = out.getDisplayedFirstBuyItem().getCount();
+							}
+							sv.restock();
+						}
+					});
+				}
+				if (since == 30 && c != null) client.interactionManager.interactEntity(client.player, c, net.minecraft.util.Hand.MAIN_HAND);
+				if (since == 50) {
+					Reroller.Book b = buyMaxBook;
+					net.minecraft.village.TradeOffer o = client.currentScreen instanceof MerchantScreen ms && b != null && b.index() < ms.getScreenHandler().getRecipes().size()
+							? ms.getScreenHandler().getRecipes().get(b.index()) : null;
+					int now = o == null ? -1 : o.getDisplayedFirstBuyItem().getCount();
+					// (No more, and a little less once the trades raise its opinion of you.)
+					check("after a restock, the book bought that way costs no more than " + (b == null ? "?" : b.price()) + " (" + now + ")",
+							o != null && o.getUses() == 0 && now >= 1 && now <= b.price());
+					check("…where buying all 12 would have made it " + boughtOutPrice, b != null && boughtOutPrice > b.price());
+					if (client.currentScreen != null) client.player.closeHandledScreen();
+				}
 				// After the trade has closed on the server too, or these would race it.
-				if (since != 20) return;
+				if (since != 60) return;
 				// Hand back what C cost, for the hall.
 				command(client, "clear @p minecraft:enchanted_book");
 				command(client, "clear @p minecraft:emerald");
@@ -637,7 +688,21 @@ final class SelfTest {
 					check("with the pause menu open, it keeps re-rolling (" + (Reroller.rolls() - rollsAsleep) + " re-rolls, then a find)",
 							Reroller.rolls() > rollsAsleep || !Reroller.bought().isEmpty());
 				}
+				if (stepMenuAt == 0 && Reroller.running() && Reroller.target() == villager(client, B) && villager(client, B) != null
+						&& !(client.currentScreen instanceof net.minecraft.client.gui.screen.GameMenuScreen)) {
+					stepMenuAt = since;
+					stepMenuRolls = Reroller.rolls();
+					log("moving on to B (" + Reroller.stateName() + "): pause menu up");
+					if (client.currentScreen instanceof MerchantScreen) client.player.closeHandledScreen();
+					client.setScreen(new net.minecraft.client.gui.screen.GameMenuScreen(true));
+				}
+				if (stepMenuAt > 0 && since == stepMenuAt + 20 * 20) {
+					check("with the pause menu up, it walks over to the next villager's lectern and re-rolls there ("
+							+ (Reroller.rolls() - stepMenuRolls) + " re-rolls)", Reroller.rolls() - stepMenuRolls >= 2 || !Reroller.running() && Reroller.bought().size() >= 2);
+					if (client.currentScreen instanceof net.minecraft.client.gui.screen.GameMenuScreen) client.setScreen(null);
+				}
 				if (Reroller.running() && since < 20 * 60 * 90) return;
+				if (stepMenuAt == 0 || since < stepMenuAt + 20 * 20) check("the walk to the next villager was tried with the pause menu up", false);
 				long seconds = (System.currentTimeMillis() - hallStart) / 1000;
 				log("hall finished after " + Reroller.rolls() + " re-rolls in " + seconds / 60 + "m " + seconds % 60 + "s");
 				next("hall_check");

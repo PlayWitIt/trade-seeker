@@ -235,6 +235,7 @@
 	"tradeseeker.check.asleep": "Villager asleep",
 	"tradeseeker.check.asleep.tip": "A villager asleep in its bed won't trade until it wakes (sunrise in about %s). It waits and carries on by itself. Night itself is fine: villagers trade at any hour unless asleep.",
 	"tradeseeker.status.wait_lectern": "Waiting to pick up the lectern…",
+	"tradeseeker.status.fetch": "Fetching the lectern that dropped, then back to the spot…",
 	"tradeseeker.status.buying": "Bought %s × %s…",
 	"tradeseeker.toast.found": "Trade Seeker found it",
 

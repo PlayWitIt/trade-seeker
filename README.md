@@ -151,7 +151,9 @@ A pod that never loses a villager, and hardly ever a lectern (this is what the s
   of the broken lecterns fly into the pod, out of reach. With it, about 1 in 50 does.
 - Don't raise the villager a block above its lectern: it won't take a lectern that is diagonally below it.
 
-Carry a spare lectern or two. If one is lost, it says so and carries on with a spare.
+Carry a spare lectern or two. If one bounces out of reach onto open floor (your level, within 4 blocks, nothing in
+the way), it sneaks over, picks it up, and walks back to its spot. One that falls into a pod is lost: it says so and
+carries on with a spare.
 
 ## Build
 
