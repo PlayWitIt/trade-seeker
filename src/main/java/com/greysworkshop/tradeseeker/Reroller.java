@@ -59,7 +59,7 @@ public final class Reroller {
 	 */
 	public record Book(int index, RegistryEntry<Enchantment> enchantment, int level, int price, int now) {
 		public Text describe() {
-			Text text = Text.empty().append(Enchantment.getName(enchantment, level)).append(Text.literal(" · " + price + " emeralds"));
+			Text text = Text.empty().append(Enchantment.getName(enchantment, level)).append(Text.literal(" · " + price + (price == 1 ? " emerald" : " emeralds")));
 			return now < price ? text.copy().append(Text.literal(" (" + now + " for now)")) : text;
 		}
 	}
@@ -71,6 +71,15 @@ public final class Reroller {
 	public static final int CURED_DISCOUNT = 20;
 	/** How many cured villagers the config remembers; the oldest go first. */
 	private static final int CURED_KEPT = 500;
+
+	/** What's known about whether you cured a villager: only its trades tell, so until they're seen, UNKNOWN. */
+	public enum Cure { YES, NO, UNKNOWN }
+
+	/**
+	 * Villagers whose trades showed no cure discount, this session. A cure makes a new villager (a new UUID), so a
+	 * villager seen uncured stays that way; this isn't saved because there's one per villager you ever look at.
+	 */
+	private static final Set<String> notCured = new HashSet<>();
 
 	public enum Kind { MATCH, NEAR, OTHER, NO_BOOK }
 
@@ -162,6 +171,15 @@ public final class Reroller {
 			chat(player, Text.translatable("tradeseeker.msg.no_lectern").formatted(Formatting.RED));
 			return;
 		}
+		// (The start key skips the menu's checklist, so these are checked here too.)
+		if (!anyCanTurnUp(client, config.wanted, CURED_DISCOUNT)) {
+			chat(player, Text.translatable("tradeseeker.msg.none_possible").formatted(Formatting.RED));
+			return;
+		}
+		if (cureOf(target) == Cure.NO && !anyCanTurnUp(client, config.wanted, 0)) {
+			chat(player, Text.translatable("tradeseeker.msg.uncured").formatted(Formatting.RED));
+			return;
+		}
 		remaining = new LinkedHashMap<>();
 		config.wanted.forEach((id, w) -> remaining.put(id, w.copy()));
 		boolean asleep = target.isSleeping();
@@ -226,6 +244,8 @@ public final class Reroller {
 			if (!(entity instanceof VillagerEntity v) || v.isBaby() || done.contains(v.getUuid()) || v == villager) continue;
 			if ((!isLibrarian(v) && !isJobless(v)) || v.getVillagerData().level() > 1 || !player.canInteractWithEntity(v, 0.5)) continue;
 			if (awakeOnly && v.isSleeping()) continue;
+			// Seen uncured, and nothing still wanted can come from an uncured villager: no point.
+			if (cureOf(v) == Cure.NO && !anyCanTurnUp(client, remaining, 0)) continue;
 			BlockPos pos = lecternFor(client, v, false);
 			// A jobless one that isn't right beside its lectern would never take it.
 			if (pos != null && isJobless(v) && v.getBlockPos().getManhattanDistance(pos) != 1) continue;
@@ -277,7 +297,7 @@ public final class Reroller {
 	}
 
 	private static void fail(MinecraftClient client, String key, Object... args) {
-		if (client.player != null && client.currentScreen instanceof MerchantScreen) client.player.closeHandledScreen();
+		if (client.player != null) closeTrades(client, client.player);
 		stop(client, Text.translatable(key, args).formatted(Formatting.RED));
 		ding(client, false);
 	}
@@ -298,8 +318,16 @@ public final class Reroller {
 			villager = null;
 			return;
 		}
-		// Chat, the pause menu, the inventory: wait until it's closed. The trade screen is ours.
-		if (client.currentScreen != null && !(client.currentScreen instanceof MerchantScreen)) return;
+		// Tabbed out, the pause menu, chat, options: it carries on (the trades open out of sight, and in single player
+		// the world keeps running). This menu, or an inventory or chest (whose clicks the trades would upset): it waits.
+		if (client.currentScreen instanceof SeekerScreen) return;
+		if (client.currentScreen instanceof net.minecraft.client.gui.screen.ingame.HandledScreen<?> && !(client.currentScreen instanceof MerchantScreen)) {
+			if (trades(player) != null) {
+				closeTrades(client, player);
+				if (state == State.AWAIT_OFFERS) enter(State.OPEN);
+			}
+			return;
+		}
 		// Hurt: a drop in health, or the red flinch (which shows even when health regenerates before it's sent).
 		boolean flinched = player.hurtTime > 0 && lastHurtTime == 0;
 		lastHurtTime = player.hurtTime;
@@ -368,7 +396,7 @@ public final class Reroller {
 				napTicks = 0;
 				releaseKeys(client);
 				client.interactionManager.cancelBlockBreaking();
-				if (client.currentScreen instanceof MerchantScreen) player.closeHandledScreen();
+				closeTrades(client, player);
 				chat(player, Text.translatable("tradeseeker.msg.asleep", untilMorning(client)).formatted(Formatting.GOLD));
 				TradeSeekerClient.LOGGER.info("Villager asleep at time {}; waiting for it to wake", client.world.getTimeOfDay() % 24000);
 			}
@@ -475,13 +503,14 @@ public final class Reroller {
 	}
 
 	private static void awaitOffers(MinecraftClient client, ClientPlayerEntity player) {
-		if (client.currentScreen instanceof MerchantScreen screen && !screen.getScreenHandler().getRecipes().isEmpty()) {
+		MerchantScreenHandler handler = trades(player);
+		if (handler != null && !handler.getRecipes().isEmpty()) {
 			attempts = 0;
-			check(client, player, screen);
+			check(client, player, handler);
 			return;
 		}
 		if (ticksInState > 60) {
-			if (client.currentScreen instanceof MerchantScreen) player.closeHandledScreen();
+			closeTrades(client, player);
 			if (++attempts >= 3) {
 				if (isNight(client) && !villager.isSleeping()) {
 					// Awake, yet no trades at night: this server must not allow night trading. Another villager won't
@@ -499,34 +528,49 @@ public final class Reroller {
 		}
 	}
 
-	private static void check(MinecraftClient client, ClientPlayerEntity player, MerchantScreen screen) {
-		MerchantScreenHandler handler = screen.getScreenHandler();
+	private static void check(MinecraftClient client, ClientPlayerEntity player, MerchantScreenHandler handler) {
 		if (handler.getExperience() > 0 || villager.getVillagerData().level() > 1) {
 			// Partway through a hall, a traded villager is just skipped.
 			if (!done.isEmpty()) {
 				done.add(villager.getUuid());
-				player.closeHandledScreen();
+				closeTrades(client, player);
 				if (nextVillager(client)) return;
 			}
 			fail(client, "tradeseeker.msg.locked");
 			return;
 		}
 		if (remaining.isEmpty()) {
-			player.closeHandledScreen();
+			closeTrades(client, player);
 			stop(client, Text.translatable("tradeseeker.msg.nothing_left").formatted(Formatting.YELLOW));
 			return;
 		}
 		learnCured(villager, handler.getRecipes(), player);
-		List<Book> books = books(handler.getRecipes(), discountFor(villager));
+		TradeMemory.record(villager, handler.getRecipes(), false);
+		int discount = discountFor(villager);
+		if (!anyCanTurnUp(client, remaining, discount)) {
+			// Now it knows whether you cured it, and none of the books still wanted can come from it at their prices:
+			// re-rolling would never end. Move on to a villager that can, or stop and say why.
+			boolean cureWouldDo = discount == 0 && anyCanTurnUp(client, remaining, CURED_DISCOUNT);
+			closeTrades(client, player);
+			done.add(villager.getUuid());
+			BlockPos at = villager.getBlockPos();
+			if (cureWouldDo && nextVillager(client)) {
+				chat(player, Text.translatable("tradeseeker.msg.uncured_next", at.toShortString(), villager.getBlockPos().toShortString()).formatted(Formatting.AQUA));
+				return;
+			}
+			fail(client, cureWouldDo ? "tradeseeker.msg.uncured" : "tradeseeker.msg.none_possible");
+			return;
+		}
+		List<Book> books = books(handler.getRecipes(), discount);
 		Book match = firstWanted(books);
 		lastSeen = describeAll(books);
 		TradeSeekerClient.LOGGER.info("Re-roll {}: {}", rolls, lastSeen.getString());
 		record(player, books, match);
 		if (match != null) {
-			found(client, player, screen, match);
+			found(client, player, handler, match);
 			return;
 		}
-		player.closeHandledScreen();
+		closeTrades(client, player);
 		int max = ModConfig.INSTANCE.maxRolls;
 		if (max > 0 && rolls >= max) {
 			stop(client, Text.translatable("tradeseeker.msg.max_rolls", rolls).formatted(Formatting.YELLOW));
@@ -563,9 +607,13 @@ public final class Reroller {
 		if (seen.size() > 200) seen.remove(seen.size() - 1);
 	}
 
-	private static void found(MinecraftClient client, ClientPlayerEntity player, MerchantScreen screen, Book book) {
+	private static void found(MinecraftClient client, ClientPlayerEntity player, MerchantScreenHandler handler, Book book) {
 		found = book;
-		select(client, screen, book.index());
+		// Your call, so the trade screen comes up, over whatever you're doing. Auto-buy can do it out of sight.
+		if (!ModConfig.INSTANCE.autoBuy && !(client.currentScreen instanceof MerchantScreen)) {
+			client.setScreen(new MerchantScreen(handler, player.getInventory(), villager.getDisplayName()));
+		}
+		select(client, handler, book.index());
 		long seconds = (System.currentTimeMillis() - startedAt) / 1000;
 		chat(player, Text.translatable("tradeseeker.msg.found", book.describe(), rolls, seconds / 60, seconds % 60)
 				.formatted(Formatting.GREEN, Formatting.BOLD));
@@ -618,12 +666,12 @@ public final class Reroller {
 	 * the stack in the payment slot), refilling the payment from the inventory, until something runs out.
 	 */
 	private static void buy(MinecraftClient client, ClientPlayerEntity player) {
-		if (!(client.currentScreen instanceof MerchantScreen screen)) {
+		MerchantScreenHandler handler = trades(player);
+		if (handler == null) {
 			if (boughtHere > 0) finishBuying(client, player);
 			else fail(client, "tradeseeker.msg.buy_closed");
 			return;
 		}
-		MerchantScreenHandler handler = screen.getScreenHandler();
 		ItemStack result = handler.getSlot(2).getStack();
 		int free = freeSlot(handler);
 		if (result.isEmpty() || free < 0) {
@@ -647,8 +695,37 @@ public final class Reroller {
 		}
 		status(player, Text.translatable("tradeseeker.status.buying", boughtHere, found.describe()));
 		// Refill the payment slots from the inventory, as clicking the trade again would.
-		select(client, screen, found.index());
+		select(client, handler, found.index());
 		delay = Math.max(2, ModConfig.INSTANCE.speed.delay);
+	}
+
+	/** The villager's trades, open on screen or out of sight; or null. */
+	private static MerchantScreenHandler trades(ClientPlayerEntity player) {
+		return player.currentScreenHandler instanceof MerchantScreenHandler handler ? handler : null;
+	}
+
+	/** Closes the trades; the screen too if they're on it, but never a screen of yours they were opened behind. */
+	private static void closeTrades(MinecraftClient client, ClientPlayerEntity player) {
+		if (client.currentScreen instanceof MerchantScreen) {
+			player.closeHandledScreen();
+		} else if (trades(player) != null) {
+			player.networkHandler.sendPacket(new net.minecraft.network.packet.c2s.play.CloseHandledScreenC2SPacket(player.currentScreenHandler.syncId));
+			player.currentScreenHandler = player.playerScreenHandler;
+		}
+	}
+
+	/**
+	 * While a run opens a villager's trades and you're in another screen (the pause menu, chat, tabbed out), they open
+	 * out of sight, so that screen stays up. A find you're to decide on brings the trade screen up then.
+	 */
+	public static boolean hidesTrades(MinecraftClient client, net.minecraft.client.gui.screen.Screen next) {
+		return state == State.AWAIT_OFFERS && next instanceof MerchantScreen && client.currentScreen != null
+				&& !(client.currentScreen instanceof net.minecraft.client.gui.screen.ingame.HandledScreen<?>);
+	}
+
+	/** In single player, a menu pauses the world, re-rolls and all; not while it runs (except for its own menu). */
+	public static boolean keepsWorldRunning(net.minecraft.client.gui.screen.Screen screen) {
+		return state != null && !(screen instanceof SeekerScreen);
 	}
 
 	private static int freeSlot(MerchantScreenHandler handler) {
@@ -659,6 +736,7 @@ public final class Reroller {
 	private static void finishBuying(MinecraftClient client, ClientPlayerEntity player) {
 		Text what = boughtHere > 1 ? Text.translatable("tradeseeker.msg.bought_many", boughtHere, found.describe()) : found.describe();
 		chat(player, Text.translatable("tradeseeker.msg.bought", what).formatted(Formatting.GREEN));
+		TradeMemory.locked(villager);
 		String id = idOf(found.enchantment());
 		remaining.remove(id);
 		// Got it: off the wanted list for good, so it's never rolled for again.
@@ -674,7 +752,7 @@ public final class Reroller {
 		}
 		// (Bought by hand, the purchase sound has played already.)
 		if (ModConfig.INSTANCE.autoBuy) Sounds.bought();
-		if (client.currentScreen instanceof MerchantScreen) player.closeHandledScreen();
+		closeTrades(client, player);
 		if (nextVillager(client)) {
 			chat(player, Text.translatable("tradeseeker.msg.next_villager", remainingText()).formatted(Formatting.AQUA));
 		} else {
@@ -687,11 +765,12 @@ public final class Reroller {
 	}
 
 	/** Shows the trade as picked and fills the payment slots from the inventory, as clicking it would. Buys nothing. */
-	private static void select(MinecraftClient client, MerchantScreen screen, int index) {
-		MerchantScreenAccessor accessor = (MerchantScreenAccessor) screen;
-		accessor.tradeseeker$setSelectedIndex(index);
-		accessor.tradeseeker$setIndexStartOffset(Math.max(0, Math.min(index, screen.getScreenHandler().getRecipes().size() - 7)));
-		MerchantScreenHandler handler = screen.getScreenHandler();
+	private static void select(MinecraftClient client, MerchantScreenHandler handler, int index) {
+		if (client.currentScreen instanceof MerchantScreen screen && screen.getScreenHandler() == handler) {
+			MerchantScreenAccessor accessor = (MerchantScreenAccessor) screen;
+			accessor.tradeseeker$setSelectedIndex(index);
+			accessor.tradeseeker$setIndexStartOffset(Math.max(0, Math.min(index, handler.getRecipes().size() - 7)));
+		}
 		handler.setRecipeIndex(index);
 		handler.switchTo(index);
 		client.getNetworkHandler().sendPacket(new SelectMerchantTradeC2SPacket(index));
@@ -976,21 +1055,66 @@ public final class Reroller {
 
 	/** The lasting discount a villager gives you on books: CURED_DISCOUNT once its trades showed you cured it. */
 	public static int discountFor(VillagerEntity v) {
-		return v != null && ModConfig.INSTANCE.curedVillagers.contains(v.getUuidAsString()) ? CURED_DISCOUNT : 0;
+		return cureOf(v) == Cure.YES ? CURED_DISCOUNT : 0;
 	}
 
-	/** The lasting discount of the villager the menu would start on. */
-	public static int targetDiscount(MinecraftClient client) {
-		if (client.player == null || client.world == null) return 0;
-		return discountFor(running() ? villager : findVillager(client));
+	public static Cure cureOf(VillagerEntity v) {
+		if (v == null) return Cure.UNKNOWN;
+		String id = v.getUuidAsString();
+		if (ModConfig.INSTANCE.curedVillagers.contains(id)) return Cure.YES;
+		return notCured.contains(id) ? Cure.NO : Cure.UNKNOWN;
+	}
+
+	/** The villager the menu would start on (the one being re-rolled, while running). */
+	public static VillagerEntity targetVillager(MinecraftClient client) {
+		if (client.player == null || client.world == null) return null;
+		return running() ? villager : findVillager(client);
+	}
+
+	/** Whether a wanted book can turn up at all, at its levels and prices, from a villager with this lasting discount. */
+	public static boolean canTurnUp(MinecraftClient client, String id, ModConfig.Want w, int discount) {
+		if (client.world == null) return true;
+		var entry = client.world.getRegistryManager().getOrThrow(net.minecraft.registry.RegistryKeys.ENCHANTMENT).getEntry(net.minecraft.util.Identifier.tryParse(id));
+		// Unknown here (another server's list): don't hold anything up over it.
+		if (entry.isEmpty()) return true;
+		Enchantment e = entry.get().value();
+		boolean treasure = entry.get().isIn(net.minecraft.registry.tag.EnchantmentTags.DOUBLE_TRADE_PRICE);
+		return Odds.perRoll(1, e.getMinLevel(), e.getMaxLevel(), treasure, w.minLevel, w.minPrice, w.maxPrice, discount) > 0;
+	}
+
+	public static boolean anyCanTurnUp(MinecraftClient client, Map<String, ModConfig.Want> wants, int discount) {
+		for (var e : wants.entrySet()) if (canTurnUp(client, e.getKey(), e.getValue(), discount)) return true;
+		return false;
+	}
+
+	/** The villager you last right-clicked, so trades you open by hand are known to be its. */
+	private static VillagerEntity handOpened;
+
+	public static void usedEntity(Entity entity) {
+		if (entity instanceof VillagerEntity v) handOpened = v;
 	}
 
 	/** Learns from trades you open by hand whether that villager was cured, so the menu's odds count it. */
 	public static void watchTrades(MinecraftClient client) {
 		if (running() || !(client.currentScreen instanceof MerchantScreen screen) || screen.getScreenHandler().getRecipes().isEmpty()) return;
-		if (client.crosshairTarget instanceof EntityHitResult hit && hit.getEntity() instanceof VillagerEntity v) {
+		VillagerEntity v = handOpened != null && !handOpened.isRemoved() ? handOpened
+				: client.crosshairTarget instanceof EntityHitResult hit && hit.getEntity() instanceof VillagerEntity looked ? looked : null;
+		if (v == null) return;
+		MerchantScreenHandler handler = screen.getScreenHandler();
+		TradeMemory.record(v, handler.getRecipes(), handler.getExperience() > 0 || v.getVillagerData().level() > 1);
+		// Once is enough for each opening.
+		if (v != learnedFrom) {
+			learnedFrom = v;
 			learnCured(v, screen.getScreenHandler().getRecipes(), client.player);
+			TradeSeekerClient.LOGGER.info("Trades opened by hand at {}: cure {}", v.getBlockPos().toShortString(), cureOf(v));
 		}
+	}
+
+	private static VillagerEntity learnedFrom;
+
+	/** The trade screen closed: the next one opened is learned from again. */
+	public static void tradesClosed() {
+		learnedFrom = null;
 	}
 
 	/**
@@ -1001,22 +1125,31 @@ public final class Reroller {
 	private static void learnCured(VillagerEntity v, TradeOfferList offers, ClientPlayerEntity player) {
 		if (v == null || player == null) return;
 		var hero = player.getStatusEffect(net.minecraft.entity.effect.StatusEffects.HERO_OF_THE_VILLAGE);
+		boolean told = false;
 		for (TradeOffer offer : offers) {
 			float multiplier = offer.getPriceMultiplier();
+			// A trade with no multiplier shows no discount either way.
 			if (multiplier <= 0) continue;
+			told = true;
 			int heroShare = hero == null ? 0
 					: Math.max(1, (int) Math.floor((0.3 + 0.0625 * hero.getAmplifier()) * offer.getOriginalFirstBuyItem().getCount()));
 			int fromReputation = -offer.getSpecialPrice() - heroShare;
+			TradeSeekerClient.LOGGER.debug("Cure check: {} × {}, reputation discount {}", offer.getSellItem(), multiplier, fromReputation);
 			if (fromReputation > MathHelper.floor(50 * multiplier)) {
+				notCured.remove(v.getUuidAsString());
 				List<String> cured = ModConfig.INSTANCE.curedVillagers;
 				if (!cured.contains(v.getUuidAsString())) {
 					cured.add(v.getUuidAsString());
 					while (cured.size() > CURED_KEPT) cured.remove(0);
 					ModConfig.save();
+					chat(player, Text.translatable("tradeseeker.msg.cured_seen", CURED_DISCOUNT).formatted(Formatting.GREEN));
 				}
 				return;
 			}
 		}
+		if (!told) return;
+		// (Hitting a cured villager enough also brings its discount down this far; then it's right to count none.)
+		notCured.add(v.getUuidAsString());
 		if (ModConfig.INSTANCE.curedVillagers.remove(v.getUuidAsString())) ModConfig.save();
 	}
 
@@ -1046,26 +1179,38 @@ public final class Reroller {
 	// ---- Finding the villager and lectern ----
 
 	/**
-	 * The villager you're looking at; or else (in a trading hall you often look through glass, or at the lectern)
-	 * the one nearest the spot you're looking at, within reach.
+	 * The villager to re-roll, always one in reach: the one you're looking at; or else, looking at a lectern, the
+	 * villager nearest that lectern (a trading hall); or else the one nearest you. Untraded librarians and jobless
+	 * villagers come first; with none in reach, the nearest other one, so the checklist can say what's wrong with it.
+	 * (Picking by where you look let a villager out of reach win, through glass or past a far wall.)
 	 */
 	private static VillagerEntity findVillager(MinecraftClient client) {
-		if (client.crosshairTarget instanceof EntityHitResult hit && hit.getEntity() instanceof VillagerEntity v && !v.isBaby()) return v;
 		ClientPlayerEntity player = client.player;
-		Vec3d aim = client.crosshairTarget != null && client.crosshairTarget.getType() != HitResult.Type.MISS
-				? client.crosshairTarget.getPos() : player.getEyePos();
-		VillagerEntity best = null;
-		double bestDistance = Double.MAX_VALUE;
+		if (client.crosshairTarget instanceof EntityHitResult hit && hit.getEntity() instanceof VillagerEntity v && !v.isBaby()
+				&& player.canInteractWithEntity(v, 0.5)) {
+			return v;
+		}
+		Vec3d from = player.getEntityPos();
+		if (client.crosshairTarget instanceof BlockHitResult hit && client.crosshairTarget.getType() == HitResult.Type.BLOCK
+				&& client.world.getBlockState(hit.getBlockPos()).isOf(Blocks.LECTERN) && player.canInteractWithBlockAt(hit.getBlockPos(), 0)) {
+			from = Vec3d.ofCenter(hit.getBlockPos());
+		}
+		VillagerEntity best = null, other = null;
+		double bestDistance = Double.MAX_VALUE, otherDistance = Double.MAX_VALUE;
 		for (Entity entity : client.world.getEntities()) {
-			if (!(entity instanceof VillagerEntity v) || v.isBaby() || v.squaredDistanceTo(player) > 6 * 6) continue;
-			if (!isLibrarian(v) && !isJobless(v)) continue;
-			double d = v.getBoundingBox().getCenter().squaredDistanceTo(aim);
-			if (d < bestDistance) {
-				best = v;
-				bestDistance = d;
+			if (!(entity instanceof VillagerEntity v) || v.isBaby() || !player.canInteractWithEntity(v, 0.5)) continue;
+			double d = v.squaredDistanceTo(from);
+			if ((isLibrarian(v) || isJobless(v)) && v.getVillagerData().level() <= 1) {
+				if (d < bestDistance) {
+					best = v;
+					bestDistance = d;
+				}
+			} else if (d < otherDistance) {
+				other = v;
+				otherDistance = d;
 			}
 		}
-		return best;
+		return best != null ? best : other;
 	}
 
 	/** Jobless villagers near the lectern other than ours: in a hall, one of them could take it instead. */
@@ -1219,9 +1364,7 @@ public final class Reroller {
 		} else {
 			checks.add(new Check(Status.OK, Text.translatable(isLibrarian(v) ? "tradeseeker.check.librarian" : "tradeseeker.check.jobless"),
 					Text.translatable("tradeseeker.check.villager.tip")));
-			if (discountFor(v) > 0) {
-				checks.add(new Check(Status.OK, Text.translatable("tradeseeker.check.cured", CURED_DISCOUNT), Text.translatable("tradeseeker.check.cured.tip", CURED_DISCOUNT)));
-			}
+			cureChecks(client, v, checks);
 			if (v.isSleeping()) {
 				checks.add(new Check(Status.WARN, Text.translatable("tradeseeker.check.asleep"), Text.translatable("tradeseeker.check.asleep.tip", untilMorning(client))));
 			} else {
@@ -1284,6 +1427,39 @@ public final class Reroller {
 			}
 		}
 		return checks;
+	}
+
+	/**
+	 * What the cure means for this start. Some prices only a villager you cured asks; whether you cured this one only
+	 * shows in its trades, so until they're seen it says so (a run opens them on the first re-roll and stops there if
+	 * the cure isn't there). With no pick possible even from a cured villager, Start is blocked: it would never end.
+	 */
+	private static void cureChecks(MinecraftClient client, VillagerEntity v, List<Check> checks) {
+		Map<String, ModConfig.Want> wants = running() ? remaining : ModConfig.INSTANCE.wanted;
+		Cure cure = cureOf(v);
+		if (cure == Cure.YES) {
+			checks.add(new Check(Status.OK, Text.translatable("tradeseeker.check.cured", CURED_DISCOUNT), Text.translatable("tradeseeker.check.cured.tip", CURED_DISCOUNT)));
+		}
+		if (wants.isEmpty()) return;
+		if (!anyCanTurnUp(client, wants, CURED_DISCOUNT)) {
+			checks.add(new Check(Status.BAD, Text.translatable("tradeseeker.check.none_possible"), Text.translatable("tradeseeker.check.none_possible.tip")));
+			return;
+		}
+		if (cure == Cure.YES) return;
+		// The picks only a cured villager can give.
+		boolean anyUncured = anyCanTurnUp(client, wants, 0), someNeedCure = false;
+		for (var e : wants.entrySet()) {
+			if (!canTurnUp(client, e.getKey(), e.getValue(), 0) && canTurnUp(client, e.getKey(), e.getValue(), CURED_DISCOUNT)) someNeedCure = true;
+		}
+		if (!someNeedCure) return;
+		if (cure == Cure.UNKNOWN) {
+			checks.add(new Check(Status.WARN, Text.translatable("tradeseeker.check.cure_unknown"),
+					Text.translatable(isJobless(v) ? "tradeseeker.check.cure_unknown.jobless" : "tradeseeker.check.cure_unknown.tip", CURED_DISCOUNT)));
+		} else if (anyUncured) {
+			checks.add(new Check(Status.WARN, Text.translatable("tradeseeker.check.not_cured"), Text.translatable("tradeseeker.check.not_cured.some")));
+		} else {
+			checks.add(new Check(Status.BAD, Text.translatable("tradeseeker.check.not_cured"), Text.translatable("tradeseeker.check.not_cured.all")));
+		}
 	}
 
 	// ---- Self-test hooks ----

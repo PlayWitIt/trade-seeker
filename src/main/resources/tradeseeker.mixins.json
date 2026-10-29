@@ -3,6 +3,10 @@
 	"package": "com.greysworkshop.tradeseeker.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
+		"InteractionMixin",
+		"EntityRendererMixin",
+		"EntityRenderStateMixin",
+		"MinecraftClientMixin",
 		"MerchantScreenAccessor"
 	],
 	"injectors": {

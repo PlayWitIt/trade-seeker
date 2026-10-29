@@ -13,7 +13,8 @@ until the villager offers a book you picked, at a level and price you accept.
    - **Price**: drag the two ends of the slider (or scroll over them). The gold band shows what villagers really ask
      for that book. The presets are Any, the cheaper half, and a bargain (the cheapest quarter).
    - The odds: "1 in N re-rolls · about T", worked out from the game's own trade rules and your measured pace.
-4. Look at the villager and press **Start re-rolling** (or Shift+Enter).
+4. Press **Start re-rolling** (or Shift+Enter). It re-rolls the villager you're looking at, or else the one nearest
+   you (nearest the lectern you look at, in a trading hall). It never picks one out of reach.
 
 The checklist above Start shows what's in place: the villager, the lectern, an axe, spare lecterns and, with
 auto-buy, the emeralds, books and inventory space. Start stays greyed out until nothing is missing.
@@ -26,6 +27,10 @@ When it finds a book, it plays a jingle and shows a toast, then waits with the t
   Press Start to carry on.
 
 It repeats the jingle every 10 seconds until you act (Options: Keep reminding me).
+
+While it runs you can do other things: tab out, open the pause menu, chat, change settings. It carries on (in single
+player the world keeps running too), and the villager's trades open out of sight, so your screen stays up. A find you
+have to decide on brings the trade screen up. It waits only while the J menu, or an inventory or chest, is open.
 
 There are four find sounds: Chime, Bell, Fanfare and Level up. Click one in Options to hear it, and set the volume
 there. A purchase plays a coin and a happy villager, and a finished list plays the challenge fanfare.
@@ -47,9 +52,23 @@ has already been traded with.
   - Speed: Fast, Normal, or Careful (for strict anticheats).
   - Turn to face the targets.
   - Stop if I get hurt (on by default).
+  - Don't let me hit villagers (off by default): your attacks on villagers do nothing, so a stray click can't cost a
+    cured villager's discount. Arrows, and sword sweeps at something else, can still reach them.
   - Near-miss messages, sound, and a re-roll limit.
 - Keys: **J** opens the menu, even while it's running. "Start / stop re-rolling" can be bound in Controls.
 - Settings and the menu's tab and selection are kept in `config/tradeseeker.json`. 1.0.0 settings carry over.
+
+## Trades over villagers' heads
+
+No more signs. Once a villager's trades have been opened (by you, or by a re-roll), they show over its head, up to
+24 blocks away and through glass, and they're remembered in `config/tradeseeker-trades.json` across restarts. Options,
+**Labels** tab:
+
+- **Top books** (the default): books at their best level, in gold, and books on your wanted list, in green.
+- **All books**, **All trades**, or **Nothing**.
+
+Book prices are what the villager keeps asking you: less a cure's 20, never under 1. A traded villager is marked
+"locked in". A villager that loses its job is forgotten (its next job brings new trades). **Forget all** clears them.
 
 ## Cured villagers: 1 emerald books
 
@@ -63,9 +82,15 @@ Every book it offers you costs less, and it keeps that discount through every re
 - The mod judges a find on the price it keeps: base price less 20. Set the price to 1 and it only stops on books that
   stay 1 emerald. The Seen list shows the lower price for now in brackets when there is one.
 - It learns a villager was cured from its trades (the server sends each trade's discount), when it opens them or when
-  you do. Then the checklist says "Cured by you", and the price band and odds count the 20 off. Until then, open its
-  trades once by hand so the odds are right. It remembers cured villagers in `config/tradeseeker.json` (the last 500),
-  so that's once per villager, not once per session. It's only your cure that counts: the discount is per player.
+  you do. It remembers cured villagers in `config/tradeseeker.json` (the last 500), so that's once per villager.
+- What the menu says, for a price only a cured villager asks:
+  - **Cured by you: −20 for good** (checklist): known cured. The price band and odds count the 20 off.
+  - **Cured? Not checked yet**: it hasn't seen this villager's trades. The odds say "only a villager you cured goes
+    this cheap: 1 in N if this one is". Right-click it once to open its trades, or just start: the first re-roll checks.
+  - **Not cured by you**: its trades show no cure discount. If no pick can come from it, Start is blocked, and a run
+    that finds this out stops right away (or, in a hall, moves on to the next villager) instead of re-rolling forever.
+- It's only your cure that counts: the discount is per player. And you must be in the world when the zombie villager
+  turns back (it takes 3 to 5 minutes), or the game gives the discount to nobody.
 
 How often a cured villager's book is 1 emerald for good: any level I book (not Mending) always; Mending 2 in 5;
 Unbreaking III 11 in 35; Protection IV 8 in 45; Efficiency V or Sharpness V 1 in 11. Hitting the villager lowers
@@ -123,4 +148,5 @@ Carry a spare lectern or two. If one is lost, it says so and carries on with a s
 
 - `./gradlew runSelfTest` builds a trading hall in a survival world and re-rolls it for real. It ends with Mending
   and Unbreaking III at any price and takes about 10 minutes.
+- `./gradlew runCureTest` only runs the cure and labels part (a couple of minutes).
 - `./gradlew runMenuTest` only takes the menu screenshots.

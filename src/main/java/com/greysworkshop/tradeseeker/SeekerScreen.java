@@ -41,7 +41,7 @@ public final class SeekerScreen extends Screen {
 	private static final int HOVER = 0x1EFFFFFF, FOCUS = 0x34FFFFFF;
 	private static final int TEXT = 0xFFEDEDF2, MUTED = 0xFFA0A0AE, DIM = 0xFF686876;
 	private static final int ACCENT = 0xFF4FE38A, ACCENT_DARK = 0xFF1F6B42, GOLD = 0xFFFFC94A, PURPLE = 0xFFC792FF;
-	private static final int WARN = 0xFFFFD447, BAD = 0xFFFF6464, TRACK = 0xFF34343F, BAND = 0x66FFC94A;
+	private static final int WARN = 0xFFFFD447, BAD = 0xFFFF6464, TRACK = 0xFF34343F, BAND = 0x66FFC94A, CURED_BAND = 0x3357D9A0;
 
 	private static final int PAD = 8, ROW = 18, GAP = 6;
 	/** The books most people re-roll for, at their best level. */
@@ -81,6 +81,8 @@ public final class SeekerScreen extends Screen {
 	private int tradeable;
 	/** The lasting discount of the villager it would start on (from a cure), as Reroller learned it. */
 	private int discount;
+	/** Whether you cured that villager, as far as its trades have shown. */
+	private Reroller.Cure cure = Reroller.Cure.UNKNOWN;
 	private Tab tab = Tab.ALL;
 	private Choice focused;
 	private TextFieldWidget search;
@@ -219,22 +221,37 @@ public final class SeekerScreen extends Screen {
 	}
 
 	private double chance(Choice c, Want w) {
+		return chance(c, w, discount);
+	}
+
+	private double chance(Choice c, Want w, int discount) {
 		return Odds.perRoll(tradeable, c.minLevel, c.maxLevel, c.treasure, w.minLevel, w.minPrice, w.maxPrice, discount);
 	}
 
 	/** The chance one re-roll turns up any picked book. */
 	private double combinedChance() {
+		return combinedChance(discount);
+	}
+
+	private double combinedChance(int discount) {
 		double sum = 0;
 		for (var e : ModConfig.INSTANCE.wanted.entrySet()) {
 			Choice c = find(e.getKey());
-			if (c != null) sum += chance(c, e.getValue());
+			if (c != null) sum += chance(c, e.getValue(), discount);
 		}
 		return sum;
 	}
 
+	/** Not known to be cured, but a cure would make this possible: the odds as if it's cured are worth showing. */
+	private boolean onlyIfCured(double chanceNow, double chanceCured) {
+		return discount == 0 && chanceNow <= 0 && chanceCured > 0;
+	}
+
 	private void refreshChecks() {
 		checks = client == null ? new ArrayList<>() : new ArrayList<>(Reroller.preflight(client));
-		discount = client == null ? 0 : Reroller.targetDiscount(client);
+		var target = client == null ? null : Reroller.targetVillager(client);
+		discount = Reroller.discountFor(target);
+		cure = Reroller.cureOf(target);
 		// Problems first, so one never hides behind "+N".
 		checks.sort(Comparator.comparingInt(c -> -c.status().ordinal()));
 		checksAge = 0;
@@ -372,14 +389,16 @@ public final class SeekerScreen extends Screen {
 			return;
 		}
 		double p = combinedChance();
-		Text line = p <= 0 ? Text.translatable("tradeseeker.combined.never", n)
+		boolean ifCured = onlyIfCured(p, combinedChance(Reroller.CURED_DISCOUNT));
+		Text line = ifCured ? Text.translatable(cure == Reroller.Cure.NO ? "tradeseeker.combined.not_cured" : "tradeseeker.combined.if_cured", n)
+				: p <= 0 ? Text.translatable("tradeseeker.combined.never", n)
 				: Text.translatable("tradeseeker.combined", n, Odds.oneIn(p), Odds.duration(Odds.oneIn(p) * ModConfig.INSTANCE.secondsPerRoll));
 		Text clear = Text.translatable("tradeseeker.clear");
 		int cw = font.getWidth(clear) + 8, cx1 = listX1 - 3, cx0 = cx1 - cw;
 		int room = cx0 - 6 - (listX0 + 4);
 		// Too long: drop the time rather than cut a word.
 		if (font.getWidth(line) > room && p > 0) line = Text.translatable("tradeseeker.combined.short", n, Odds.oneIn(p));
-		context.drawText(font, fit(line, room), listX0 + 4, fy, p <= 0 ? BAD : MUTED, false);
+		context.drawText(font, fit(line, room), listX0 + 4, fy, ifCured && cure == Reroller.Cure.UNKNOWN ? WARN : p <= 0 ? BAD : MUTED, false);
 		hit(listX0 + 1, fy - 2, cx0 - 2, fy + 10, null, () -> List.of(Text.translatable("tradeseeker.combined.tip")));
 		boolean hover = mouseX >= cx0 && mouseX < cx1 && mouseY >= fy - 2 && mouseY < fy + 10;
 		chip(context, cx0, fy - 2, cx1, fy + 10, hover);
@@ -577,7 +596,9 @@ public final class SeekerScreen extends Screen {
 		context.drawText(font, value, x1 - vw, y, on ? GOLD : DIM, false);
 		context.drawItem(new ItemStack(Items.EMERALD), x1 - vw - 17, y - 4);
 		y += 13;
-		drawSlider(context, x0, y, x1, w, bandLow, bandHigh, on, mouseX, mouseY);
+		// Not known to be cured: a faint band for what a villager you cured asks, as well.
+		int curedLow = discount > 0 ? -1 : Odds.lowestPrice(w.minLevel, c.treasure, Reroller.CURED_DISCOUNT);
+		drawSlider(context, x0, y, x1, w, bandLow, bandHigh, curedLow, on, mouseX, mouseY);
 		y += 14;
 
 		// Presets on the left, what villagers ask on the right.
@@ -593,9 +614,11 @@ public final class SeekerScreen extends Screen {
 		int bw = font.getWidth(band);
 		if (px + 4 + bw <= x1) {
 			context.drawText(font, band, x1 - bw, y + 3, 0xFFB89640, false);
+			int curedFrom = Odds.lowestPrice(w.minLevel, c.treasure, Reroller.CURED_DISCOUNT), curedHigh = Odds.highestPrice(c.maxLevel, c.treasure, Reroller.CURED_DISCOUNT);
 			hit(x1 - bw, y, x1, y + 13, null, () -> discount > 0
 					? List.of(Text.translatable("tradeseeker.band.tip", roman(w.minLevel), roman(c.maxLevel), bandLow, bandHigh), Text.translatable("tradeseeker.band.cured.tip", discount))
-					: List.of(Text.translatable("tradeseeker.band.tip", roman(w.minLevel), roman(c.maxLevel), bandLow, bandHigh)));
+					: List.of(Text.translatable("tradeseeker.band.tip", roman(w.minLevel), roman(c.maxLevel), bandLow, bandHigh),
+							Text.translatable("tradeseeker.band.if_cured.tip", curedFrom, curedHigh).formatted(Formatting.GRAY)));
 		}
 		y += 19;
 
@@ -610,11 +633,12 @@ public final class SeekerScreen extends Screen {
 		changed();
 	}
 
-	private void drawSlider(DrawContext context, int x0, int y, int x1, Want w, int bandLow, int bandHigh, boolean on, int mouseX, int mouseY) {
+	private void drawSlider(DrawContext context, int x0, int y, int x1, Want w, int bandLow, int bandHigh, int curedLow, boolean on, int mouseX, int mouseY) {
 		sliderX0 = x0 + 3;
 		sliderX1 = x1 - 3;
 		int cy = y + 3;
-		// Where villagers' prices fall, under the track.
+		// Where villagers' prices fall, under the track; with a cure they start lower (curedLow, or -1).
+		if (curedLow > 0 && curedLow < bandLow) context.fill(px(curedLow) - 1, cy - 2, px(bandLow) - 1, cy + 3, CURED_BAND);
 		context.fill(px(bandLow) - 1, cy - 4, px(bandHigh) + 1, cy + 5, BAND);
 		context.fill(sliderX0, cy, sliderX1, cy + 2, TRACK);
 		context.fill(px(w.minPrice), cy, px(w.maxPrice), cy + 2, on ? ACCENT : DIM);
@@ -622,7 +646,9 @@ public final class SeekerScreen extends Screen {
 		boolean hoverHigh = drag == Drag.HIGH || !hoverLow && near(mouseX, mouseY, px(w.maxPrice), cy, w);
 		handle(context, px(w.minPrice), cy, hoverLow, on);
 		handle(context, px(w.maxPrice), cy, hoverHigh, on);
-		hit(sliderX0 - 4, cy - 6, sliderX1 + 4, cy + 8, null, () -> List.of(Text.translatable("tradeseeker.slider.tip")));
+		hit(sliderX0 - 4, cy - 6, sliderX1 + 4, cy + 8, null, () -> curedLow > 0 && curedLow < bandLow
+				? List.of(Text.translatable("tradeseeker.slider.tip"), Text.translatable("tradeseeker.slider.cured_tip").formatted(Formatting.GRAY))
+				: List.of(Text.translatable("tradeseeker.slider.tip")));
 	}
 
 	private boolean near(int mouseX, int mouseY, int hx, int cy, Want w) {
@@ -652,7 +678,13 @@ public final class SeekerScreen extends Screen {
 		double p = chance(c, w);
 		int tx = x0 + 4, ty = y + 5;
 		if (p <= 0) {
-			drawWrapped(context, Text.translatable("tradeseeker.odds.never"), tx, ty - 1, x1 - x0 - 8, BAD);
+			// Why not: too cheap for an uncured villager (and whether this one is cured isn't known, or it isn't), or
+			// too cheap for anyone.
+			double cured = chance(c, w, Reroller.CURED_DISCOUNT);
+			String key = !onlyIfCured(p, cured) ? (discount > 0 ? "tradeseeker.odds.never_cured" : "tradeseeker.odds.never")
+					: cure == Reroller.Cure.NO ? "tradeseeker.odds.not_cured" : "tradeseeker.odds.if_cured";
+			Text why = key.equals("tradeseeker.odds.if_cured") ? Text.translatable(key, Odds.oneIn(cured)) : Text.translatable(key);
+			drawWrapped(context, why, tx, ty - 1, x1 - x0 - 8, key.equals("tradeseeker.odds.if_cured") ? WARN : BAD);
 			return;
 		}
 		long n = Odds.oneIn(p);
@@ -774,6 +806,35 @@ public final class SeekerScreen extends Screen {
 		return l;
 	}
 
+	/** What the labels over villagers' heads show, and the trades it remembers for them. */
+	private void drawLabelOptions(DrawContext context, int x, int y, int x1, int mouseX, int mouseY) {
+		ModConfig config = ModConfig.INSTANCE;
+		TextRenderer font = textRenderer;
+		context.drawText(font, Text.translatable("tradeseeker.opt.labels"), x, y + 4, TEXT, false);
+		y += 16;
+		TradeMemory.Labels[] modes = TradeMemory.Labels.values();
+		int segW = (x1 - 10 - x - 2 * (modes.length - 1)) / modes.length, segX = x;
+		for (TradeMemory.Labels mode : modes) {
+			String key = "tradeseeker.labels." + mode.name().toLowerCase(Locale.ROOT);
+			segment(context, segX, y, segW, Text.translatable(key).getString(), config.labels == mode, config.labels == mode, true, true, mouseX, mouseY,
+					() -> {
+						config.labels = mode;
+						ModConfig.save();
+					}, () -> List.of(Text.translatable(key + ".tip")));
+			segX += segW + 2;
+		}
+		y += 22;
+		y = drawWrapped(context, Text.translatable("tradeseeker.labels.about"), x, y, x1 - 10 - x, DIM) + 6;
+		Text known = Text.translatable("tradeseeker.labels.known", TradeMemory.count());
+		context.drawText(font, known, x, y + 2, MUTED, false);
+		Text forget = Text.translatable("tradeseeker.labels.forget");
+		int fw = font.getWidth(forget) + 10, fx1 = x1 - 10, fx0 = fx1 - fw;
+		boolean hover = mouseX >= fx0 && mouseX < fx1 && mouseY >= y - 1 && mouseY < y + 12;
+		chip(context, fx0, y - 1, fx1, y + 12, hover);
+		context.drawText(font, forget, fx0 + 5, y + 2, hover ? TEXT : MUTED, false);
+		hit(fx0, y - 1, fx1, y + 12, TradeMemory::forgetAll, () -> List.of(Text.translatable("tradeseeker.labels.forget.tip")));
+	}
+
 	// ---- Options (a small panel over the screen) ----
 
 	/** Options, in two tabs so the panel fits the smallest GUI (240 high). */
@@ -782,7 +843,7 @@ public final class SeekerScreen extends Screen {
 		TextRenderer font = textRenderer;
 		hits.clear();
 		context.fill(0, 0, width, height, 0x88000000);
-		int w = Math.min(260, width - 20), h = 206;
+		int w = Math.min(260, width - 20), h = 222;
 		int x0 = (width - w) / 2, y0 = (height - h) / 2, x1 = x0 + w;
 		// Clicks outside close it.
 		hit(0, 0, width, height, () -> options = false, null);
@@ -794,9 +855,10 @@ public final class SeekerScreen extends Screen {
 
 		// Tabs.
 		int tx = x0 + 6, ty = y0 + 22;
-		for (int i = 0; i < 2; i++) {
+		String[] optionTabs = {"tradeseeker.options.behaviour", "tradeseeker.options.sounds", "tradeseeker.options.labels"};
+		for (int i = 0; i < optionTabs.length; i++) {
 			int which = i;
-			Text label = Text.translatable(i == 0 ? "tradeseeker.options.behaviour" : "tradeseeker.options.sounds");
+			Text label = Text.translatable(optionTabs[i]);
 			int tw = font.getWidth(label) + 10;
 			boolean active = optionsTab == i;
 			boolean hover = mouseX >= tx && mouseX < tx + tw && mouseY >= ty && mouseY < ty + 13;
@@ -858,6 +920,13 @@ public final class SeekerScreen extends Screen {
 				config.nearMisses = !config.nearMisses;
 				ModConfig.save();
 			}, () -> List.of(Text.translatable("tradeseeker.opt.near.tip")));
+			y += 16;
+			toggleRow(context, x, y, Text.translatable("tradeseeker.opt.protect"), config.protectVillagers, true, mouseX, mouseY, () -> {
+				config.protectVillagers = !config.protectVillagers;
+				ModConfig.save();
+			}, () -> lines("tradeseeker.opt.protect.tip", 2));
+		} else if (optionsTab == 2) {
+			drawLabelOptions(context, x, y, x1, mouseX, mouseY);
 		} else {
 			// The find sound: click one to hear it.
 			context.drawText(font, Text.translatable("tradeseeker.opt.sound"), x, y + 4, TEXT, false);
@@ -1000,11 +1069,13 @@ public final class SeekerScreen extends Screen {
 		return r << 16 | g << 8 | b;
 	}
 
-	private void drawWrapped(DrawContext context, Text text, int x, int y, int width, int color) {
+	/** Returns the y below the last line. */
+	private int drawWrapped(DrawContext context, Text text, int x, int y, int width, int color) {
 		for (var line : textRenderer.wrapLines(text, width)) {
 			context.drawText(textRenderer, line, x, y, color, false);
 			y += 10;
 		}
+		return y;
 	}
 
 	/** Text cut to fit a width (formatting comes from the colour it's drawn in). */

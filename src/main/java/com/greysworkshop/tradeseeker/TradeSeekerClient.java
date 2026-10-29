@@ -23,6 +23,7 @@ public final class TradeSeekerClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
 		ModConfig.load();
+		TradeMemory.load();
 		KeyBinding.Category category = KeyBinding.Category.create(Identifier.of(MOD_ID, "main"));
 		menuKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
 				"key.tradeseeker.menu", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_J, category));
@@ -40,11 +41,16 @@ public final class TradeSeekerClient implements ClientModInitializer {
 					Reroller.start(client);
 				}
 			}
-			Reroller.watchTrades(client);
+			if (client.currentScreen instanceof net.minecraft.client.gui.screen.ingame.MerchantScreen) Reroller.watchTrades(client);
+			else Reroller.tradesClosed();
 			Reroller.tick(client);
 			Sounds.tick(client);
+			TradeMemory.tick();
 		});
-		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> Reroller.stop(client, null));
+		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+			Reroller.stop(client, null);
+			TradeMemory.save();
+		});
 		HudElementRegistry.addLast(Identifier.of(MOD_ID, "notice"), Hud::render);
 
 		if (Boolean.getBoolean("tradeseeker.selftest")) SelfTest.start();

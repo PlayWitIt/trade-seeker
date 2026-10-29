@@ -101,6 +101,10 @@ public final class ModConfig {
 	public boolean nearMisses = true;
 	/** Stop if you take damage (on an anarchy server, someone may be at you). */
 	public boolean stopWhenHurt = true;
+	/** Your attacks on villagers do nothing (a hit costs a cured villager's discount for a while). */
+	public boolean protectVillagers = false;
+	/** What the labels over villagers' heads show, from the trades it has seen. */
+	public TradeMemory.Labels labels = TradeMemory.Labels.TOP;
 	/** Villagers (UUIDs) whose trades showed you cured them, oldest first, so the discount is known after a restart. */
 	public java.util.List<String> curedVillagers = new java.util.ArrayList<>();
 	/** Seconds one re-roll takes, learned from past runs; for the time estimates. */
@@ -126,6 +130,7 @@ public final class ModConfig {
 				loaded.wanted.values().forEach(Want::clamp);
 				if (loaded.speed == null) loaded.speed = Speed.NORMAL;
 				if (loaded.foundSound == null) loaded.foundSound = Sounds.Style.CHIME;
+				if (loaded.labels == null) loaded.labels = TradeMemory.Labels.TOP;
 				loaded.volume = Math.max(0, Math.min(100, loaded.volume));
 				if (!(loaded.jobWait == 0 || loaded.jobWait >= 0.5 && loaded.jobWait <= 30)) loaded.jobWait = 0;
 				if (loaded.jobTakeTimes == null) loaded.jobTakeTimes = new java.util.ArrayList<>();

@@ -46,6 +46,12 @@ loom {
 			vmArgs "-Dtradeseeker.selftest=true", "-Xmx1536m"
 			runDir "run"
 		}
+		cureTest {
+			client()
+			name = "Cure Test"
+			vmArgs "-Dtradeseeker.selftest=true", "-Dtradeseeker.selftest.cure=true", "-Xmx1536m"
+			runDir "run"
+		}
 		menuTest {
 			client()
 			name = "Menu Test"

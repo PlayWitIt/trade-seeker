@@ -51,7 +51,7 @@ final class SelfTest {
 			"minecraft:unbreaking", "minecraft:power", "minecraft:fire_protection", "minecraft:smite", "minecraft:bane_of_arthropods"};
 
 	private static boolean started, escaped, night;
-	private static int rollsAsleep, hurtChecked;
+	private static int rollsAsleep, hurtChecked, settledAt;
 	private static int tick = -1, phaseStart, passed, failed, booksBefore;
 	private static String phase = "setup";
 	private static long hallStart;
@@ -64,6 +64,12 @@ final class SelfTest {
 	static void start() {
 		log("Self-test armed");
 		ScreenEvents.AFTER_INIT.register((client, screen, w, h) -> {
+			// A first launch shows the accessibility welcome first: skip it.
+			if (!started && screen instanceof net.minecraft.client.gui.screen.AccessibilityOnboardingScreen) {
+				client.options.onboardAccessibility = false;
+				client.send(() -> client.setScreen(new TitleScreen()));
+				return;
+			}
 			if (started || !(screen instanceof TitleScreen)) return;
 			started = true;
 			client.send(() -> openWorld(client));
@@ -82,6 +88,7 @@ final class SelfTest {
 		}
 		try {
 			ModConfig.useFile(Files.createTempDirectory("tradeseeker").resolve("tradeseeker.json"));
+			TradeMemory.useFile(Files.createTempDirectory("tradeseeker").resolve("tradeseeker-trades.json"));
 		} catch (IOException e) {
 			throw new RuntimeException(e);
 		}
@@ -105,6 +112,13 @@ final class SelfTest {
 					checkUpgrade();
 				}
 				if (tick == 60) build(client);
+				// -Dtradeseeker.selftest.cure=true: straight to the cure and labels test, on pod G's villager.
+				if (tick == 120 && Boolean.getBoolean("tradeseeker.selftest.cure")) {
+					command(client, "tp @p 0.69 -60 16.5 -90 20");
+					command(client, "kill @e[type=minecraft:villager,x=2,y=-61,z=17,dx=0,dy=4,dz=4]");
+					next("cure_go");
+					return;
+				}
 				if (tick == 140) {
 					config.wanted.clear();
 					config.wanted.put("minecraft:mending", new Want(1, 1, 64));
@@ -134,8 +148,8 @@ final class SelfTest {
 				// -Dtradeseeker.selftest.menu=true: just the menu screenshots, for quick looks at the layout.
 				if (tick == 245) {
 					client.setScreen(null);
-					// Stop when hurt: start on a book no librarian sells, then take a little damage.
-					want("minecraft:protection", 9, 1, 64);
+					// Stop when hurt: start on a book that hardly ever turns up, then take a little damage.
+					wantRare();
 					aimAt(client, villager(client, A));
 					Reroller.start(client);
 					check("re-rolling starts on the villager you look at", Reroller.running() && Reroller.target() == villager(client, A));
@@ -148,7 +162,7 @@ final class SelfTest {
 					command(client, "effect give @p minecraft:instant_health 1 1");
 				}
 				if (tick == 370) {
-					want("minecraft:protection", 9, 1, 64);
+					wantRare();
 					config.maxRolls = 3;
 					// The shortest wait for the job you can set.
 					config.jobWait = 0.5;
@@ -249,7 +263,7 @@ final class SelfTest {
 				var spares = Reroller.preflight(client).stream().filter(c -> c.label().getString().contains("spare")).findFirst();
 				check("lecterns in the offhand count as spares (" + spares.map(c -> c.label().getString()).orElse("none") + ")",
 						spares.isPresent() && spares.get().status() == Reroller.Status.OK && spares.get().label().getString().startsWith("4"));
-				want("minecraft:protection", 9, 1, 64);
+				wantRare();
 				config.autoBuy = false;
 				config.maxRolls = 2;
 				aimAt(client, villager(client, D));
@@ -316,7 +330,7 @@ final class SelfTest {
 				boolean warned = Reroller.preflight(client).stream().anyMatch(c -> c.status() == Reroller.Status.WARN
 						&& c.detail().getString().contains("beside"));
 				check("the checklist warns that a villager not right beside its lectern may never take it", warned);
-				want("minecraft:protection", 9, 1, 64);
+				wantRare();
 				config.jobWait = 5.5;
 				aimAt(client, e);
 				Reroller.start(client);
@@ -344,7 +358,7 @@ final class SelfTest {
 				boolean warned = Reroller.preflight(client).stream().anyMatch(c -> c.status() == Reroller.Status.WARN
 						&& c.label().getString().contains("Bed"));
 				check("the checklist warns about a bed the villager may sleep in at night", warned);
-				want("minecraft:protection", 9, 1, 64);
+				wantRare();
 				Reroller.start(client);
 				next("night_fall");
 			}
@@ -380,7 +394,7 @@ final class SelfTest {
 				}
 				if (since == 360) {
 					aimAt(client, villager(client, F));
-					want("minecraft:protection", 9, 1, 64);
+					wantRare();
 					Reroller.start(client);
 					next("night_asleep");
 				}
@@ -409,12 +423,125 @@ final class SelfTest {
 				}
 			}
 			case "night_done" -> {
-				if (since == 20) command(client, "tp @p 0.69 -60 1 -90 20");
-				if (since == 50) next("hall_go");
+				if (since == 20) {
+					// Pod F's villager goes, and pod G gets a new one (the night test took its own): in reach alone, never cured.
+					command(client, "kill @e[type=minecraft:villager,x=2,y=-61,z=16,dx=0,dy=4,dz=5]");
+					command(client, "setblock 1 -60 16 minecraft:lectern");
+					command(client, "summon minecraft:villager 2.7 -60 16.5 {VillagerData:{profession:\"minecraft:none\",level:1,type:\"minecraft:plains\"}}");
+					command(client, "tp @p 0.69 -60 16.5 -90 20");
+				}
+				if (since == 50) next("cure_go");
+			}
+			case "cure_go" -> {
+				if (since == 1) client.player.setPitch(-90);
+				if (since != 20) return;
+				VillagerEntity g = villager(client, G);
+				// Looking at the sky: no villager is looked at, so the nearest in reach is the one.
+				check("with no villager looked at, the nearest one in reach is picked", g != null && Reroller.targetVillager(client) == g);
+				// Prices only a cured villager asks: Mending, and the common books, at 1 emerald.
+				ModConfig.INSTANCE.wanted.clear();
+				ModConfig.INSTANCE.wanted.put("minecraft:mending", new Want(1, 1, 1));
+				for (String id : COMMON) ModConfig.INSTANCE.wanted.put(id, new Want(1, 1, 1));
+				boolean unknown = Reroller.preflight(client).stream().anyMatch(c -> c.status() == Reroller.Status.WARN && c.label().getString().contains("Cured?"));
+				check("the checklist says the cure isn't checked yet, when the prices need one", unknown && Reroller.cureOf(g) == Reroller.Cure.UNKNOWN);
+				config.autoBuy = true;
+				config.buyMax = false;
+				config.untickBought = false;
+				Reroller.start(client);
+				next("uncured");
+			}
+			case "uncured" -> {
+				if (Reroller.running() && since < 20 * 60) return;
+				VillagerEntity g = villager(client, G);
+				if (g == null) {
+					check("pod G has a villager for the cure test", false);
+					next("hall_go");
+					return;
+				}
+				check("an uncured villager is seen as uncured on its first look (" + Reroller.cureOf(g) + ")", Reroller.cureOf(g) == Reroller.Cure.NO);
+				check("…and it stops there, instead of re-rolling for prices it never asks (" + Reroller.rolls() + " re-rolls)",
+						!Reroller.running() && Reroller.rolls() <= 1 && xp(client, G) == 0);
+				boolean blocked = Reroller.preflight(client).stream().anyMatch(c -> c.status() == Reroller.Status.BAD && c.label().getString().contains("Not cured"));
+				check("…and the checklist then blocks Start for it", blocked);
+				// The cure, as the game does it when a zombie villager turns back.
+				MinecraftServer server = client.getServer();
+				java.util.UUID player = client.player.getUuid(), id = g.getUuid();
+				server.execute(() -> {
+					var world = server.getOverworld();
+					if (world.getEntity(id) instanceof VillagerEntity sv && server.getPlayerManager().getPlayer(player) != null) {
+						world.handleInteraction(net.minecraft.entity.EntityInteraction.ZOMBIE_VILLAGER_CURED, server.getPlayerManager().getPlayer(player), sv);
+					}
+				});
+				next("cure_open");
+			}
+			case "cure_open" -> {
+				VillagerEntity g = villager(client, G);
+				if (since == 10) {
+					// Opening its trades by hand is how it learns.
+					aimAt(client, g);
+					client.interactionManager.interactEntity(client.player, g, net.minecraft.util.Hand.MAIN_HAND);
+				}
+				if (since == 30) {
+					log("cure_open: screen " + client.currentScreen + ", handler " + client.player.currentScreenHandler);
+					if (client.player.currentScreenHandler instanceof net.minecraft.screen.MerchantScreenHandler m) {
+						for (var o : m.getRecipes()) log("  offer " + o.getSellItem() + " special " + o.getSpecialPrice() + " × " + o.getPriceMultiplier());
+					}
+					var sv = client.getServer().getOverworld().getEntity(g.getUuid());
+					if (sv instanceof VillagerEntity v) log("  server reputation " + v.getReputation(client.getServer().getPlayerManager().getPlayer(client.player.getUuid())));
+				}
+				if (since != 40) return;
+				check("opening a cured villager's trades by hand shows it's cured (" + Reroller.cureOf(g) + ")", Reroller.cureOf(g) == Reroller.Cure.YES
+						&& ModConfig.INSTANCE.curedVillagers.contains(g.getUuidAsString()));
+				if (client.currentScreen != null) client.player.closeHandledScreen();
+				boolean cured = Reroller.preflight(client).stream().anyMatch(c -> c.status() == Reroller.Status.OK && c.label().getString().contains("Cured by you"));
+				check("…and the checklist says so", cured);
+				booksBefore = books(client, Items.EMERALD);
+				Reroller.start(client);
+				next("cured");
+			}
+			case "cured" -> {
+				if (since % 1200 == 0) log("cured: " + Reroller.rolls() + " re-rolls, state " + Reroller.stateName());
+				if (Reroller.running() && since < 20 * 60 * 10) return;
+				// The payment slots' emeralds come back to the inventory a moment after the trade closes.
+				if (settledAt == 0) settledAt = since;
+				if (since - settledAt < 30) return;
+				Reroller.Book b = Reroller.bought().isEmpty() ? null : Reroller.bought().get(0);
+				int paid = booksBefore - books(client, Items.EMERALD);
+				check("a cured villager sells a wanted book for 1 emerald (" + (b == null ? "none" : b.describe().getString()) + ", paid " + paid
+						+ ", " + Reroller.rolls() + " re-rolls)", b != null && b.price() == 1 && paid == 1 && xp(client, G) > 0);
+				if (Reroller.running()) Reroller.stop(client, null);
+				config.untickBought = true;
+				next("labels");
+			}
+			case "labels" -> {
+				VillagerEntity g = villager(client, G);
+				if (since == 1) {
+					if (client.currentScreen != null) client.player.closeHandledScreen();
+					config.labels = TradeMemory.Labels.ALL;
+					client.player.setPitch(0);
+					client.player.setYaw(-90);
+				}
+				if (since == 30) screenshot(client, "6_labels_over_villager");
+				if (since != 32) return;
+				java.util.List<net.minecraft.text.Text> lines = g == null ? java.util.List.of() : TradeMemory.lines(client, g);
+				check("the villager's trades show over its head (" + lines.size() + " lines)", lines.size() >= 2);
+				check("…marked as traded once bought from", lines.stream().anyMatch(t -> t.getString().contains("locked")));
+				config.labels = TradeMemory.Labels.TOP;
+				TradeMemory.save();
+				if (Boolean.getBoolean("tradeseeker.selftest.cure")) {
+					finish(client);
+					return;
+				}
+				int known = TradeMemory.count();
+				TradeMemory.load();
+				check("remembered trades survive a restart (" + TradeMemory.count() + " of " + known + ")", known > 0 && TradeMemory.count() == known);
+				// The hall counts the books it buys: the one bought here is out of the way.
+				command(client, "clear @p minecraft:enchanted_book");
+				command(client, "tp @p 0.69 -60 1 -90 20");
+				next("hall_go");
 			}
 			case "hall_go" -> {
 				if (since != 30) return;
-				command(client, "kill @e[type=minecraft:villager,x=2,y=-61,z=17,dx=0,dy=4,dz=4]");
 				// The real job: Mending and Unbreaking III at any price, from a two-villager hall, in one go.
 				config.wanted.clear();
 				config.wanted.put("minecraft:mending", new Want(1, 1, 64));
@@ -428,6 +555,20 @@ final class SelfTest {
 			case "hall" -> {
 				if (since % 1200 == 0) log("hall: " + Reroller.rolls() + " re-rolls, " + (System.currentTimeMillis() - hallStart) / 1000 + " s, state "
 						+ Reroller.stateName() + ", villager " + (Reroller.target() == villager(client, A) ? "A" : "B"));
+				// The pause menu (as tabbing out opens it) mid-run: the world keeps going, and so do the re-rolls.
+				if (since == 200 && Reroller.running()) {
+					rollsAsleep = Reroller.rolls();
+					client.setScreen(new net.minecraft.client.gui.screen.GameMenuScreen(true));
+				}
+				if (since == 200 + 20 * 25 && client.currentScreen instanceof net.minecraft.client.gui.screen.GameMenuScreen) {
+					check("with the pause menu open, it keeps re-rolling, and the menu stays up (" + (Reroller.rolls() - rollsAsleep) + " re-rolls)",
+							Reroller.rolls() - rollsAsleep >= 2 && !client.isPaused());
+					client.setScreen(null);
+				} else if (since == 200 + 20 * 25 && rollsAsleep > 0) {
+					// It found something meanwhile, and a find brings the trades up: fine, as long as it got on with it.
+					check("with the pause menu open, it keeps re-rolling (" + (Reroller.rolls() - rollsAsleep) + " re-rolls, then a find)",
+							Reroller.rolls() > rollsAsleep || !Reroller.bought().isEmpty());
+				}
 				if (Reroller.running() && since < 20 * 60 * 90) return;
 				long seconds = (System.currentTimeMillis() - hallStart) / 1000;
 				log("hall finished after " + Reroller.rolls() + " re-rolls in " + seconds / 60 + "m " + seconds % 60 + "s");
@@ -493,6 +634,7 @@ final class SelfTest {
 		check("cured, Mending costs 1–18 emeralds for good", Odds.lowestPrice(1, true, 20) == 1 && Odds.highestPrice(1, true, 20) == 18);
 		check("cured, Mending is 1 emerald in 6 of 15 prices", Math.abs(Odds.priceChance(1, true, 1, 1, 20) - 6 / 15.0) < 1e-9);
 		check("cured, any level I book is 1 emerald", Odds.highestPrice(1, false, 20) == 1);
+		check("Mending at 1 emerald needs a cure", Odds.perRoll(38, 1, 1, true, 1, 1, 1, 0) == 0 && Odds.perRoll(38, 1, 1, true, 1, 1, 1, 20) > 0);
 		// Unbreaking III at any price, with 38 tradeable enchantments: 2/3 × 1/38 × 1/3.
 		double p = Odds.perRoll(38, 1, 3, false, 3, 1, 64);
 		check("Unbreaking III at any price is 1 in 171 (" + Odds.oneIn(p) + ")", Odds.oneIn(p) == 171);
@@ -516,6 +658,11 @@ final class SelfTest {
 		} catch (IOException e) {
 			check("1.0.0 settings carry over (" + e + ")", false);
 		}
+	}
+
+	/** A book that can turn up but hardly ever does (Protection IV at its lowest price, about 1 in 10,000): a run that goes on. */
+	private static void wantRare() {
+		want("minecraft:protection", 4, 14, 14);
 	}
 
 	private static void want(String id, int level, int min, int max) {
