@@ -53,12 +53,24 @@ import java.util.UUID;
 public final class Reroller {
 	private enum State { OPEN, AWAIT_OFFERS, STEP, BREAK, WAIT_JOBLESS, PLACE, CONFIRM_PLACE, WAIT_JOB, BUY, DECIDE, WAIT_DAY }
 
-	/** One enchanted book a librarian offers. */
-	public record Book(int index, RegistryEntry<Enchantment> enchantment, int level, int price) {
+	/**
+	 * One enchanted book a librarian offers. price is what it settles at for good (what counts for a find); now is what
+	 * the trade screen shows, which can be lower for a while after a cure or with Hero of the Village.
+	 */
+	public record Book(int index, RegistryEntry<Enchantment> enchantment, int level, int price, int now) {
 		public Text describe() {
-			return Text.empty().append(Enchantment.getName(enchantment, level)).append(Text.literal(" · " + price + " emeralds"));
+			Text text = Text.empty().append(Enchantment.getName(enchantment, level)).append(Text.literal(" · " + price + " emeralds"));
+			return now < price ? text.copy().append(Text.literal(" (" + now + " for now)")) : text;
 		}
 	}
+
+	/**
+	 * What curing a villager takes off a book for good. The cure gives the curer a lasting +100 reputation and a fading
+	 * +25 (gone in about 25 days), and a book costs 0.2 × reputation less: 25 at first, then 20 for good.
+	 */
+	public static final int CURED_DISCOUNT = 20;
+	/** Villagers whose trades showed they were cured by this player. */
+	private static final Set<UUID> cured = new HashSet<>();
 
 	public enum Kind { MATCH, NEAR, OTHER, NO_BOOK }
 
@@ -504,7 +516,8 @@ public final class Reroller {
 			stop(client, Text.translatable("tradeseeker.msg.nothing_left").formatted(Formatting.YELLOW));
 			return;
 		}
-		List<Book> books = books(handler.getRecipes());
+		learnCured(villager, handler.getRecipes(), player);
+		List<Book> books = books(handler.getRecipes(), discountFor(villager));
 		Book match = firstWanted(books);
 		lastSeen = describeAll(books);
 		TradeSeekerClient.LOGGER.info("Re-roll {}: {}", rolls, lastSeen.getString());
@@ -942,19 +955,64 @@ public final class Reroller {
 
 	// ---- Reading trades ----
 
-	/** Every enchanted book on offer, with its emerald price after discounts. */
-	public static List<Book> books(TradeOfferList offers) {
+	/**
+	 * Every enchanted book on offer, with the price it settles at for good: its base price less the lasting discount
+	 * (CURED_DISCOUNT for a villager you cured), never under 1. Fading discounts don't count, so a find stays a find.
+	 */
+	public static List<Book> books(TradeOfferList offers, int discount) {
 		List<Book> books = new ArrayList<>();
 		for (int i = 0; i < offers.size(); i++) {
 			TradeOffer offer = offers.get(i);
 			ItemStack sell = offer.getSellItem();
 			if (!sell.isOf(Items.ENCHANTED_BOOK) || offer.isDisabled()) continue;
-			ItemStack cost = offer.getDisplayedFirstBuyItem();
-			int price = cost.isOf(Items.EMERALD) ? cost.getCount() : Integer.MAX_VALUE;
+			boolean emeralds = offer.getOriginalFirstBuyItem().isOf(Items.EMERALD);
+			int price = emeralds ? Math.max(1, offer.getOriginalFirstBuyItem().getCount() - discount) : Integer.MAX_VALUE;
+			int now = emeralds ? offer.getDisplayedFirstBuyItem().getCount() : Integer.MAX_VALUE;
 			ItemEnchantmentsComponent stored = sell.getOrDefault(DataComponentTypes.STORED_ENCHANTMENTS, ItemEnchantmentsComponent.DEFAULT);
-			for (var entry : stored.getEnchantmentEntries()) books.add(new Book(i, entry.getKey(), entry.getIntValue(), price));
+			for (var entry : stored.getEnchantmentEntries()) books.add(new Book(i, entry.getKey(), entry.getIntValue(), price, now));
 		}
 		return books;
+	}
+
+	/** The lasting discount a villager gives you on books: CURED_DISCOUNT once its trades showed you cured it. */
+	public static int discountFor(VillagerEntity v) {
+		return v != null && cured.contains(v.getUuid()) ? CURED_DISCOUNT : 0;
+	}
+
+	/** The lasting discount of the villager the menu would start on. */
+	public static int targetDiscount(MinecraftClient client) {
+		if (client.player == null || client.world == null) return 0;
+		return discountFor(running() ? villager : findVillager(client));
+	}
+
+	/** Learns from trades you open by hand whether that villager was cured, so the menu's odds count it. */
+	public static void watchTrades(MinecraftClient client) {
+		if (running() || !(client.currentScreen instanceof MerchantScreen screen) || screen.getScreenHandler().getRecipes().isEmpty()) return;
+		if (client.crosshairTarget instanceof EntityHitResult hit && hit.getEntity() instanceof VillagerEntity v) {
+			learnCured(v, screen.getScreenHandler().getRecipes(), client.player);
+		}
+	}
+
+	/**
+	 * The server sends each trade's reputation discount (its special price, which also holds Hero of the Village's
+	 * share). Without a cure, reputation is at most 50 (fading good gossip and past trades); a cure gives at least 100.
+	 * So a discount above what 50 reputation gives means the villager was cured by you.
+	 */
+	private static void learnCured(VillagerEntity v, TradeOfferList offers, ClientPlayerEntity player) {
+		if (v == null || player == null) return;
+		var hero = player.getStatusEffect(net.minecraft.entity.effect.StatusEffects.HERO_OF_THE_VILLAGE);
+		for (TradeOffer offer : offers) {
+			float multiplier = offer.getPriceMultiplier();
+			if (multiplier <= 0) continue;
+			int heroShare = hero == null ? 0
+					: Math.max(1, (int) Math.floor((0.3 + 0.0625 * hero.getAmplifier()) * offer.getOriginalFirstBuyItem().getCount()));
+			int fromReputation = -offer.getSpecialPrice() - heroShare;
+			if (fromReputation > MathHelper.floor(50 * multiplier)) {
+				cured.add(v.getUuid());
+				return;
+			}
+		}
+		cured.remove(v.getUuid());
 	}
 
 	public static Book firstWanted(List<Book> books) {
@@ -1156,6 +1214,9 @@ public final class Reroller {
 		} else {
 			checks.add(new Check(Status.OK, Text.translatable(isLibrarian(v) ? "tradeseeker.check.librarian" : "tradeseeker.check.jobless"),
 					Text.translatable("tradeseeker.check.villager.tip")));
+			if (discountFor(v) > 0) {
+				checks.add(new Check(Status.OK, Text.translatable("tradeseeker.check.cured", CURED_DISCOUNT), Text.translatable("tradeseeker.check.cured.tip", CURED_DISCOUNT)));
+			}
 			if (v.isSleeping()) {
 				checks.add(new Check(Status.WARN, Text.translatable("tradeseeker.check.asleep"), Text.translatable("tradeseeker.check.asleep.tip", untilMorning(client))));
 			} else {
@@ -1199,13 +1260,13 @@ public final class Reroller {
 				: new Check(Status.WARN, Text.translatable("tradeseeker.check.no_spares"), Text.translatable("tradeseeker.check.spares.tip")));
 
 		if (config.autoBuy && !config.wanted.isEmpty()) {
-			int emeralds = count(inventory, Items.EMERALD), need = 0;
+			int emeralds = count(inventory, Items.EMERALD), need = 0, discount = discountFor(v);
 			var registry = client.world.getRegistryManager().getOrThrow(net.minecraft.registry.RegistryKeys.ENCHANTMENT);
 			for (var e : config.wanted.entrySet()) {
 				var entry = registry.getEntry(net.minecraft.util.Identifier.of(e.getKey()));
 				if (entry.isEmpty()) continue;
 				boolean treasure = entry.get().isIn(net.minecraft.registry.tag.EnchantmentTags.DOUBLE_TRADE_PRICE);
-				need = Math.max(need, Math.min(e.getValue().maxPrice, Odds.highestPrice(entry.get().value().getMaxLevel(), treasure)));
+				need = Math.max(need, Math.min(e.getValue().maxPrice, Odds.highestPrice(entry.get().value().getMaxLevel(), treasure, discount)));
 			}
 			checks.add(emeralds >= need ? new Check(Status.OK, Text.translatable("tradeseeker.check.emeralds", emeralds), Text.translatable("tradeseeker.check.emeralds.tip", need))
 					: new Check(emeralds == 0 ? Status.BAD : Status.WARN, Text.translatable("tradeseeker.check.emeralds_short", emeralds, need),

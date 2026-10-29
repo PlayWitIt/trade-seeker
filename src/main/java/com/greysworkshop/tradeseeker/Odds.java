@@ -4,7 +4,8 @@ package com.greysworkshop.tradeseeker;
  * What a novice librarian offers, from the game's own trade rules: two of its three novice trades are picked (paper,
  * an enchanted book, a bookshelf), so 2 in 3 re-rolls have a book. The book's enchantment is any tradeable one,
  * equally likely, at any of its levels, equally likely. It costs 2 + random(5 + 10 × level) + 3 × level emeralds,
- * doubled for treasure enchantments like Mending, and never more than 64.
+ * doubled for treasure enchantments like Mending, and never more than 64. A discount (from curing the villager) comes
+ * off that, down to 1 emerald at the least.
  */
 public final class Odds {
 	public static final double BOOK_CHANCE = 2.0 / 3.0;
@@ -12,24 +13,36 @@ public final class Odds {
 	private Odds() {}
 
 	public static int lowestPrice(int level, boolean treasure) {
-		return price(level, 0, treasure);
+		return lowestPrice(level, treasure, 0);
+	}
+
+	public static int lowestPrice(int level, boolean treasure, int discount) {
+		return price(level, 0, treasure, discount);
 	}
 
 	public static int highestPrice(int level, boolean treasure) {
-		return price(level, 4 + 10 * level, treasure);
+		return highestPrice(level, treasure, 0);
 	}
 
-	private static int price(int level, int roll, boolean treasure) {
+	public static int highestPrice(int level, boolean treasure, int discount) {
+		return price(level, 4 + 10 * level, treasure, discount);
+	}
+
+	private static int price(int level, int roll, boolean treasure, int discount) {
 		int p = 2 + roll + 3 * level;
 		if (treasure) p *= 2;
-		return Math.min(64, p);
+		return Math.max(1, Math.min(64, p) - discount);
 	}
 
 	/** The chance a book of this level is priced within [min, max]. */
 	public static double priceChance(int level, boolean treasure, int min, int max) {
+		return priceChance(level, treasure, min, max, 0);
+	}
+
+	public static double priceChance(int level, boolean treasure, int min, int max, int discount) {
 		int n = 5 + 10 * level, hits = 0;
 		for (int roll = 0; roll < n; roll++) {
-			int p = price(level, roll, treasure);
+			int p = price(level, roll, treasure, discount);
 			if (p >= min && p <= max) hits++;
 		}
 		return (double) hits / n;
@@ -40,11 +53,15 @@ public final class Odds {
 	 * tradeable is how many enchantments a librarian can sell; levels run from minEnchantLevel to maxEnchantLevel.
 	 */
 	public static double perRoll(int tradeable, int minEnchantLevel, int maxEnchantLevel, boolean treasure, int minLevel, int min, int max) {
+		return perRoll(tradeable, minEnchantLevel, maxEnchantLevel, treasure, minLevel, min, max, 0);
+	}
+
+	public static double perRoll(int tradeable, int minEnchantLevel, int maxEnchantLevel, boolean treasure, int minLevel, int min, int max, int discount) {
 		if (tradeable <= 0) return 0;
 		int levels = maxEnchantLevel - minEnchantLevel + 1;
 		double sum = 0;
 		for (int level = Math.max(minEnchantLevel, minLevel); level <= maxEnchantLevel; level++) {
-			sum += priceChance(level, treasure, min, max);
+			sum += priceChance(level, treasure, min, max, discount);
 		}
 		return BOOK_CHANCE / tradeable * sum / levels;
 	}

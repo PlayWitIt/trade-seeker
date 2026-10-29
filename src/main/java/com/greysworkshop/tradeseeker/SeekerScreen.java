@@ -79,6 +79,8 @@ public final class SeekerScreen extends Screen {
 	private final List<Choice> shown = new ArrayList<>();
 	private final List<Hit> hits = new ArrayList<>();
 	private int tradeable;
+	/** The lasting discount of the villager it would start on (from a cure), as Reroller learned it. */
+	private int discount;
 	private Tab tab = Tab.ALL;
 	private Choice focused;
 	private TextFieldWidget search;
@@ -217,7 +219,7 @@ public final class SeekerScreen extends Screen {
 	}
 
 	private double chance(Choice c, Want w) {
-		return Odds.perRoll(tradeable, c.minLevel, c.maxLevel, c.treasure, w.minLevel, w.minPrice, w.maxPrice);
+		return Odds.perRoll(tradeable, c.minLevel, c.maxLevel, c.treasure, w.minLevel, w.minPrice, w.maxPrice, discount);
 	}
 
 	/** The chance one re-roll turns up any picked book. */
@@ -232,6 +234,7 @@ public final class SeekerScreen extends Screen {
 
 	private void refreshChecks() {
 		checks = client == null ? new ArrayList<>() : new ArrayList<>(Reroller.preflight(client));
+		discount = client == null ? 0 : Reroller.targetDiscount(client);
 		// Problems first, so one never hides behind "+N".
 		checks.sort(Comparator.comparingInt(c -> -c.status().ordinal()));
 		checksAge = 0;
@@ -567,7 +570,7 @@ public final class SeekerScreen extends Screen {
 		y += 22;
 
 		// Price row and slider.
-		int bandLow = Odds.lowestPrice(w.minLevel, c.treasure), bandHigh = Odds.highestPrice(c.maxLevel, c.treasure);
+		int bandLow = Odds.lowestPrice(w.minLevel, c.treasure, discount), bandHigh = Odds.highestPrice(c.maxLevel, c.treasure, discount);
 		context.drawText(font, Text.translatable("tradeseeker.price"), x0, y, on ? TEXT : MUTED, false);
 		Text value = w.minPrice == 1 && w.maxPrice == 64 ? Text.translatable("tradeseeker.price.any") : Text.translatable("tradeseeker.price.range", w.minPrice, w.maxPrice);
 		int vw = font.getWidth(value);
@@ -586,11 +589,13 @@ public final class SeekerScreen extends Screen {
 				() -> setPrice(c, 1, mid), "tradeseeker.preset.half.tip");
 		px = preset(context, px, y, Text.translatable("tradeseeker.preset.bargain", cheap), w.minPrice == 1 && w.maxPrice == cheap, mouseX, mouseY,
 				() -> setPrice(c, 1, cheap), "tradeseeker.preset.bargain.tip");
-		Text band = Text.translatable("tradeseeker.band", bandLow, bandHigh);
+		Text band = Text.translatable(discount > 0 ? "tradeseeker.band.cured" : "tradeseeker.band", bandLow, bandHigh);
 		int bw = font.getWidth(band);
 		if (px + 4 + bw <= x1) {
 			context.drawText(font, band, x1 - bw, y + 3, 0xFFB89640, false);
-			hit(x1 - bw, y, x1, y + 13, null, () -> List.of(Text.translatable("tradeseeker.band.tip", roman(w.minLevel), roman(c.maxLevel), bandLow, bandHigh)));
+			hit(x1 - bw, y, x1, y + 13, null, () -> discount > 0
+					? List.of(Text.translatable("tradeseeker.band.tip", roman(w.minLevel), roman(c.maxLevel), bandLow, bandHigh), Text.translatable("tradeseeker.band.cured.tip", discount))
+					: List.of(Text.translatable("tradeseeker.band.tip", roman(w.minLevel), roman(c.maxLevel), bandLow, bandHigh)));
 		}
 		y += 19;
 

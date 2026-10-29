@@ -51,6 +51,25 @@ has already been traded with.
 - Keys: **J** opens the menu, even while it's running. "Start / stop re-rolling" can be bound in Controls.
 - Settings and the menu's tab and selection are kept in `config/tradeseeker.json`. 1.0.0 settings carry over.
 
+## Cured villagers: 1 emerald books
+
+Cure a zombie villager yourself, then re-roll it like any other (curing doesn't lock its trades; only a trade does).
+Every book it offers you costs less, and it keeps that discount through every re-roll:
+
+- The cure gives you a lasting +100 reputation with it and a fading +25 (gone in about 25 in-game days). A book costs
+  0.2 × reputation less, never under 1 emerald: 25 off at first, then **20 off for good**.
+- So a book whose base price is 21 or less is 1 emerald for good. One at 22 to 26 shows 1 emerald at first, then
+  creeps up to 2 to 6 as the fading part wears off, and a bought trade keeps its base price.
+- The mod judges a find on the price it keeps: base price less 20. Set the price to 1 and it only stops on books that
+  stay 1 emerald. The Seen list shows the lower price for now in brackets when there is one.
+- It learns a villager was cured from its trades (the server sends each trade's discount), when it opens them or when
+  you do. Then the checklist says "Cured by you", and the price band and odds count the 20 off. Until then, open its
+  trades once by hand so the odds are right. It's only your cure that counts: the discount is per player.
+
+How often a cured villager's book is 1 emerald for good: any level I book (not Mending) always; Mending 2 in 5;
+Unbreaking III 11 in 35; Protection IV 8 in 45; Efficiency V or Sharpness V 1 in 11. Hitting the villager lowers
+its opinion of you for a while, so don't.
+
 ## When the villager won't take the lectern
 
 A jobless villager only takes a lectern if three things hold:

@@ -490,6 +490,9 @@ final class SelfTest {
 		check("Mending costs 10–38 emeralds", Odds.lowestPrice(1, true) == 10 && Odds.highestPrice(1, true) == 38);
 		check("Unbreaking III costs 11–45 emeralds", Odds.lowestPrice(3, false) == 11 && Odds.highestPrice(3, false) == 45);
 		check("treasure prices stop at 64", Odds.highestPrice(5, true) == 64);
+		check("cured, Mending costs 1–18 emeralds for good", Odds.lowestPrice(1, true, 20) == 1 && Odds.highestPrice(1, true, 20) == 18);
+		check("cured, Mending is 1 emerald in 6 of 15 prices", Math.abs(Odds.priceChance(1, true, 1, 1, 20) - 6 / 15.0) < 1e-9);
+		check("cured, any level I book is 1 emerald", Odds.highestPrice(1, false, 20) == 1);
 		// Unbreaking III at any price, with 38 tradeable enchantments: 2/3 × 1/38 × 1/3.
 		double p = Odds.perRoll(38, 1, 3, false, 3, 1, 64);
 		check("Unbreaking III at any price is 1 in 171 (" + Odds.oneIn(p) + ")", Odds.oneIn(p) == 171);

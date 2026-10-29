@@ -40,6 +40,7 @@ public final class TradeSeekerClient implements ClientModInitializer {
 					Reroller.start(client);
 				}
 			}
+			Reroller.watchTrades(client);
 			Reroller.tick(client);
 			Sounds.tick(client);
 		});
