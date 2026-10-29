@@ -101,6 +101,8 @@ public final class ModConfig {
 	public boolean nearMisses = true;
 	/** Stop if you take damage (on an anarchy server, someone may be at you). */
 	public boolean stopWhenHurt = true;
+	/** Villagers (UUIDs) whose trades showed you cured them, oldest first, so the discount is known after a restart. */
+	public java.util.List<String> curedVillagers = new java.util.ArrayList<>();
 	/** Seconds one re-roll takes, learned from past runs; for the time estimates. */
 	public double secondsPerRoll = 3.0;
 
@@ -127,6 +129,8 @@ public final class ModConfig {
 				loaded.volume = Math.max(0, Math.min(100, loaded.volume));
 				if (!(loaded.jobWait == 0 || loaded.jobWait >= 0.5 && loaded.jobWait <= 30)) loaded.jobWait = 0;
 				if (loaded.jobTakeTimes == null) loaded.jobTakeTimes = new java.util.ArrayList<>();
+				if (loaded.curedVillagers == null) loaded.curedVillagers = new java.util.ArrayList<>();
+				loaded.curedVillagers.removeIf(id -> id == null);
 				if (loaded.tab == null) loaded.tab = "ALL";
 				if (!(loaded.secondsPerRoll >= 0.5 && loaded.secondsPerRoll <= 60)) loaded.secondsPerRoll = 3.0;
 				loaded.maxRolls = Math.max(0, loaded.maxRolls);

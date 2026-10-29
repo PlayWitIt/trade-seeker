@@ -64,7 +64,8 @@ Every book it offers you costs less, and it keeps that discount through every re
   stay 1 emerald. The Seen list shows the lower price for now in brackets when there is one.
 - It learns a villager was cured from its trades (the server sends each trade's discount), when it opens them or when
   you do. Then the checklist says "Cured by you", and the price band and odds count the 20 off. Until then, open its
-  trades once by hand so the odds are right. It's only your cure that counts: the discount is per player.
+  trades once by hand so the odds are right. It remembers cured villagers in `config/tradeseeker.json` (the last 500),
+  so that's once per villager, not once per session. It's only your cure that counts: the discount is per player.
 
 How often a cured villager's book is 1 emerald for good: any level I book (not Mending) always; Mending 2 in 5;
 Unbreaking III 11 in 35; Protection IV 8 in 45; Efficiency V or Sharpness V 1 in 11. Hitting the villager lowers

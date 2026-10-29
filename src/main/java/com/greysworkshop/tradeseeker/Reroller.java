@@ -69,8 +69,8 @@ public final class Reroller {
 	 * +25 (gone in about 25 days), and a book costs 0.2 × reputation less: 25 at first, then 20 for good.
 	 */
 	public static final int CURED_DISCOUNT = 20;
-	/** Villagers whose trades showed they were cured by this player. */
-	private static final Set<UUID> cured = new HashSet<>();
+	/** How many cured villagers the config remembers; the oldest go first. */
+	private static final int CURED_KEPT = 500;
 
 	public enum Kind { MATCH, NEAR, OTHER, NO_BOOK }
 
@@ -976,7 +976,7 @@ public final class Reroller {
 
 	/** The lasting discount a villager gives you on books: CURED_DISCOUNT once its trades showed you cured it. */
 	public static int discountFor(VillagerEntity v) {
-		return v != null && cured.contains(v.getUuid()) ? CURED_DISCOUNT : 0;
+		return v != null && ModConfig.INSTANCE.curedVillagers.contains(v.getUuidAsString()) ? CURED_DISCOUNT : 0;
 	}
 
 	/** The lasting discount of the villager the menu would start on. */
@@ -1008,11 +1008,16 @@ public final class Reroller {
 					: Math.max(1, (int) Math.floor((0.3 + 0.0625 * hero.getAmplifier()) * offer.getOriginalFirstBuyItem().getCount()));
 			int fromReputation = -offer.getSpecialPrice() - heroShare;
 			if (fromReputation > MathHelper.floor(50 * multiplier)) {
-				cured.add(v.getUuid());
+				List<String> cured = ModConfig.INSTANCE.curedVillagers;
+				if (!cured.contains(v.getUuidAsString())) {
+					cured.add(v.getUuidAsString());
+					while (cured.size() > CURED_KEPT) cured.remove(0);
+					ModConfig.save();
+				}
 				return;
 			}
 		}
-		cured.remove(v.getUuid());
+		if (ModConfig.INSTANCE.curedVillagers.remove(v.getUuidAsString())) ModConfig.save();
 	}
 
 	public static Book firstWanted(List<Book> books) {
