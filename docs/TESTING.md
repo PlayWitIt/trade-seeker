@@ -36,8 +36,9 @@ Read this when the user comes back with results from testing 1.5.0 in their own 
 
 ## Not proven by the self-test: check these first if something is wrong
 
-1. **Multiplayer servers.** Every test was single player. Hidden trades send ordinary packets, but a strict
-   anticheat might not like a trade screen staying open behind the pause menu. Speed → Careful may help.
+1. **Multiplayer servers.** The user confirmed 2026-10-29 that it works in multiplayer (server and anticheat not
+   known). A strict anticheat might still not like a trade screen staying open behind the pause menu; Speed →
+   Careful may help.
 2. **Sneaking up to a far lectern (STEP state) while a menu is open.** It presses movement keys with a screen up;
    not tested. If it stalls in a hall with the pause menu open, that's the place to look.
 3. **Labels.** They're drawn through walls (`notSneaking = true` in `submitLabel`). 1.5.1 added a distance option
