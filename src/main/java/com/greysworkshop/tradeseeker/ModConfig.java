@@ -105,6 +105,8 @@ public final class ModConfig {
 	public boolean protectVillagers = false;
 	/** What the labels over villagers' heads show, from the trades it has seen. */
 	public TradeMemory.Labels labels = TradeMemory.Labels.TOP;
+	/** Labels show on villagers this close (blocks), one of TradeMemory.RANGES. */
+	public int labelRange = 24;
 	/** Villagers (UUIDs) whose trades showed you cured them, oldest first, so the discount is known after a restart. */
 	public java.util.List<String> curedVillagers = new java.util.ArrayList<>();
 	/** Seconds one re-roll takes, learned from past runs; for the time estimates. */
@@ -131,6 +133,7 @@ public final class ModConfig {
 				if (loaded.speed == null) loaded.speed = Speed.NORMAL;
 				if (loaded.foundSound == null) loaded.foundSound = Sounds.Style.CHIME;
 				if (loaded.labels == null) loaded.labels = TradeMemory.Labels.TOP;
+				if (java.util.Arrays.stream(TradeMemory.RANGES).noneMatch(r -> r == loaded.labelRange)) loaded.labelRange = 24;
 				loaded.volume = Math.max(0, Math.min(100, loaded.volume));
 				if (!(loaded.jobWait == 0 || loaded.jobWait >= 0.5 && loaded.jobWait <= 30)) loaded.jobWait = 0;
 				if (loaded.jobTakeTimes == null) loaded.jobTakeTimes = new java.util.ArrayList<>();

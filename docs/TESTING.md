@@ -1,4 +1,4 @@
-# Trade Seeker 1.5.0: testing notes (for Claude)
+# Trade Seeker 1.5.x: testing notes (for Claude)
 
 Read this when the user comes back with results from testing 1.5.0 in their own world.
 
@@ -40,14 +40,21 @@ Read this when the user comes back with results from testing 1.5.0 in their own 
    anticheat might not like a trade screen staying open behind the pause menu. Speed → Careful may help.
 2. **Sneaking up to a far lectern (STEP state) while a menu is open.** It presses movement keys with a screen up;
    not tested. If it stalls in a hall with the pause menu open, that's the place to look.
-3. **Labels.** They're drawn through walls (`notSneaking = true` in `submitLabel`), up to 24 blocks away. In a big
-   hall that could be cluttered; maybe add a range option, or only draw when there's a line of sight.
-4. **Protect villagers.** Only `attackEntity` is blocked. Spears (`attackWithPiercingWeapon`), arrows and sweeps
-   are not.
+3. **Labels.** They're drawn through walls (`notSneaking = true` in `submitLabel`). 1.5.1 added a distance option
+   (8/16/24/48, `ModConfig.labelRange`). No line-of-sight check.
+4. **Protect villagers.** 1.5.1: `VillagerGuard` blocks direct hits, sword sweeps (mirrors `canUseSweepAttack`) and
+   spear stabs (`attackWithPiercingWeapon`). Arrows, tridents and spear charges are not blocked (server-side).
 5. **"Not cured" is kept for the session only** (`Reroller.notCured`); after a restart that villager is
    "not checked yet" again. That's by design (a cure makes a new UUID), but confirm the user is fine with it.
 6. **Hand-opened trades** are matched to a villager through `InteractionMixin.interactEntity`. Right-clicking a
    villager through another mod's UI might bypass it.
+
+## 1.5.1: demand (the user's goal is 1 emerald books)
+
+Price = base + max(0, floor(base × demand × 0.2)) + specialPrice, clamped ≥ 1. At each restock, demand += uses −
+(maxUses − uses); books have maxUses 12. Buying a trade out (12) makes a cured base-10 Mending 14 emeralds.
+`Reroller.usesKeepingPrice` gives the most uses that keep the lasting price; buy-max stops there, and buying by hand
+shows `status.bought_enough`. Repeat cures add nothing: MAJOR_POSITIVE caps at 20, MINOR_POSITIVE at 25.
 
 ## If the user reports...
 

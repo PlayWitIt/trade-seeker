@@ -120,6 +120,8 @@ public final class Reroller {
 	private static final List<Seen> seen = new ArrayList<>();
 	private static final List<Book> bought = new ArrayList<>();
 	private static int boughtHere, booksAtFind;
+	/** Buying stopped short so the price comes back the same at the next restock. */
+	private static boolean kept;
 	private static float lastHealth;
 	private static int lastHurtTime;
 	private static long endedAt;
@@ -621,6 +623,7 @@ public final class Reroller {
 		SystemToast.show(client.getToastManager(), SystemToast.Type.PERIODIC_NOTIFICATION,
 				Text.translatable("tradeseeker.toast.found"), book.describe());
 		boughtHere = 0;
+		kept = false;
 		if (ModConfig.INSTANCE.autoBuy) {
 			enter(State.BUY);
 		} else {
@@ -647,7 +650,9 @@ public final class Reroller {
 				for (int i = boughtHere; i < now; i++) bought.add(found);
 				boughtHere = now;
 				Sounds.bought();
-				status(player, Text.translatable("tradeseeker.status.bought_close", boughtHere));
+				int safe = found.index() < offers.size() ? usesKeepingPrice(offers.get(found.index()), discountFor(villager)) : 12;
+				status(player, uses >= safe ? Text.translatable("tradeseeker.status.bought_enough", boughtHere, emeralds(found.price()))
+						: Text.translatable("tradeseeker.status.bought_close", boughtHere));
 			} else if (boughtHere == 0 && ModConfig.INSTANCE.remind && ticksInState % 200 == 0) {
 				// Away from the keyboard? Say it again every 10 seconds until you act.
 				Sounds.found(true);
@@ -693,10 +698,39 @@ public final class Reroller {
 			finishBuying(client, player);
 			return;
 		}
+		// Buying it out raises its price at the next restock: stop while it still comes back at the price found.
+		TradeOffer offer = found.index() < handler.getRecipes().size() ? handler.getRecipes().get(found.index()) : null;
+		if (offer != null && offer.getUses() + 1 > usesKeepingPrice(offer, discountFor(villager))) {
+			kept = true;
+			finishBuying(client, player);
+			return;
+		}
 		status(player, Text.translatable("tradeseeker.status.buying", boughtHere, found.describe()));
 		// Refill the payment slots from the inventory, as clicking the trade again would.
 		select(client, handler, found.index());
 		delay = Math.max(2, ModConfig.INSTANCE.speed.delay);
+	}
+
+	/**
+	 * How many uses of a trade, this restock, still leave it at this lasting price afterwards. Each restock moves its
+	 * demand by (uses − unused); price = base + max(0, floor(base × demand × multiplier)) − discount, never under 1. A book
+	 * sells 12 times per restock, so buying 6 or fewer never raises it, and the unused ones bring demand down.
+	 */
+	private static Text emeralds(int n) {
+		return Text.translatable(n == 1 ? "tradeseeker.label.emerald" : "tradeseeker.label.emeralds", n);
+	}
+
+	static int usesKeepingPrice(TradeOffer offer, int discount) {
+		int base = offer.getOriginalFirstBuyItem().getCount(), max = offer.getMaxUses();
+		int lasting = Math.max(1, base - discount);
+		int best = Math.min(offer.getUses(), max);
+		for (int u = best + 1; u <= max; u++) {
+			int demand = offer.getDemandBonus() + u - (max - u);
+			int rise = Math.max(0, MathHelper.floor(base * demand * offer.getPriceMultiplier()));
+			if (Math.max(1, base + rise - discount) > lasting) break;
+			best = u;
+		}
+		return best;
 	}
 
 	/** The villager's trades, open on screen or out of sight; or null. */
@@ -736,6 +770,7 @@ public final class Reroller {
 	private static void finishBuying(MinecraftClient client, ClientPlayerEntity player) {
 		Text what = boughtHere > 1 ? Text.translatable("tradeseeker.msg.bought_many", boughtHere, found.describe()) : found.describe();
 		chat(player, Text.translatable("tradeseeker.msg.bought", what).formatted(Formatting.GREEN));
+		if (kept) chat(player, Text.translatable("tradeseeker.msg.kept_price", boughtHere, emeralds(found.price())).formatted(Formatting.GRAY));
 		TradeMemory.locked(villager);
 		String id = idOf(found.enchantment());
 		remaining.remove(id);

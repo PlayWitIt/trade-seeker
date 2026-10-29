@@ -824,6 +824,17 @@ public final class SeekerScreen extends Screen {
 			segX += segW + 2;
 		}
 		y += 22;
+		context.drawText(font, Text.translatable("tradeseeker.opt.label_range"), x, y + 4, TEXT, false);
+		int rx = x1 - 10 - TradeMemory.RANGES.length * 36 + 2;
+		for (int range : TradeMemory.RANGES) {
+			segment(context, rx, y, 34, range + "", config.labelRange == range, config.labelRange == range, config.labels != TradeMemory.Labels.OFF, true,
+					mouseX, mouseY, () -> {
+						config.labelRange = range;
+						ModConfig.save();
+					}, () -> List.of(Text.translatable("tradeseeker.opt.label_range.tip", range)));
+			rx += 36;
+		}
+		y += 22;
 		y = drawWrapped(context, Text.translatable("tradeseeker.labels.about"), x, y, x1 - 10 - x, DIM) + 6;
 		Text known = Text.translatable("tradeseeker.labels.known", TradeMemory.count());
 		context.drawText(font, known, x, y + 2, MUTED, false);

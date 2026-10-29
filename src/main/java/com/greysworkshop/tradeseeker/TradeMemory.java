@@ -77,8 +77,8 @@ public final class TradeMemory {
 
 	private static final Gson GSON = new GsonBuilder().create();
 	private static final int KEPT = 2000;
-	/** Labels show this far away at most (blocks). */
-	private static final double LABEL_RANGE = 24;
+	/** How far away labels can show (blocks), to pick from. */
+	public static final int[] RANGES = {8, 16, 24, 48};
 	private static Path file = FabricLoader.getInstance().getConfigDir().resolve("tradeseeker-trades.json");
 	/** By villager UUID, oldest first. */
 	private static Map<String, Seen> seen = new LinkedHashMap<>();
@@ -205,7 +205,8 @@ public final class TradeMemory {
 			return List.of();
 		}
 		if (!profession.getKey().map(k -> k.getValue().toString()).orElse("").equals(s.profession)) return List.of();
-		if (v.squaredDistanceTo(client.player) > LABEL_RANGE * LABEL_RANGE) return List.of();
+		int range = ModConfig.INSTANCE.labelRange;
+		if (v.squaredDistanceTo(client.player) > range * range) return List.of();
 		var registry = client.world.getRegistryManager().getOrThrow(RegistryKeys.ENCHANTMENT);
 		int discount = Reroller.discountFor(v);
 		List<Text> lines = new ArrayList<>();

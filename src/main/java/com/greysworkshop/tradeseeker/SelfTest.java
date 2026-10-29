@@ -52,6 +52,10 @@ final class SelfTest {
 
 	private static boolean started, escaped, night;
 	private static int rollsAsleep, hurtChecked, settledAt;
+	private static float healthBefore;
+	private static int handBefore, guardSlot;
+	/** Where the "don't let me hit villagers" checks put their villager, out of the pods. */
+	private static final net.minecraft.util.math.Box GUARD_AREA = new net.minecraft.util.math.Box(-4, -61, 21, -1, -57, 24);
 	private static int tick = -1, phaseStart, passed, failed, booksBefore;
 	private static String phase = "setup";
 	private static long hallStart;
@@ -111,7 +115,11 @@ final class SelfTest {
 					checkOdds();
 					checkUpgrade();
 				}
-				if (tick == 60) build(client);
+				if (tick == 60) {
+					build(client);
+					// Not the 3.0 it starts at, so the learned pace can't match it by chance.
+					config.secondsPerRoll = 9.99;
+				}
 				// -Dtradeseeker.selftest.cure=true: straight to the cure and labels test, on pod G's villager.
 				if (tick == 120 && Boolean.getBoolean("tradeseeker.selftest.cure")) {
 					command(client, "tp @p 0.69 -60 16.5 -90 20");
@@ -141,7 +149,9 @@ final class SelfTest {
 				if (tick == 190) screenshot(client, "1c_menu_options");
 				if (tick == 192 && client.currentScreen instanceof SeekerScreen s) s.testOptionsTab(1);
 				if (tick == 225) screenshot(client, "1d_menu_options_sounds");
-				if (tick == 228 && client.currentScreen instanceof SeekerScreen s) {
+				if (tick == 227 && client.currentScreen instanceof SeekerScreen s) s.testOptionsTab(2);
+				if (tick == 238) screenshot(client, "1e_menu_options_labels");
+				if (tick == 240 && client.currentScreen instanceof SeekerScreen s) {
 					s.testOptionsTab(0);
 					s.testOptions(false);
 				}
@@ -227,10 +237,16 @@ final class SelfTest {
 			}
 			case "buymax" -> {
 				if (Reroller.running() && since < 9000) return;
+				// The villager's xp from the last trade comes a moment after the run stops.
+				if (settledAt == 0) settledAt = since;
+				if (since - settledAt < 20) return;
+				settledAt = 0;
 				Reroller.Book b = Reroller.lastFound();
 				int got = b == null ? 0 : books(client, Reroller.idOf(b.enchantment()), 1);
-				int expected = b == null ? -1 : Math.min(12, Math.min(booksBefore, 320 / b.price()));
-				check("buy as many as I can afford buys until something runs out (" + got + " of " + expected + ")", b != null && got == expected);
+				// Uncured, a 7th copy would raise the price after the next restock.
+				int expected = b == null ? -1 : Math.min(6, Math.min(booksBefore, 320 / b.price()));
+				check("buy as many as I can afford buys until something runs out, or one more would raise the price (" + got + " of " + expected + ")",
+						b != null && got == expected);
 				check("…and every one was a real trade (" + xp(client, C) + " xp)", xp(client, C) == got);
 				next("buymax_cleanup");
 			}
@@ -522,12 +538,64 @@ final class SelfTest {
 					client.player.setYaw(-90);
 				}
 				if (since == 30) screenshot(client, "6_labels_over_villager");
-				if (since != 32) return;
-				java.util.List<net.minecraft.text.Text> lines = g == null ? java.util.List.of() : TradeMemory.lines(client, g);
-				check("the villager's trades show over its head (" + lines.size() + " lines)", lines.size() >= 2);
-				check("…marked as traded once bought from", lines.stream().anyMatch(t -> t.getString().contains("locked")));
-				config.labels = TradeMemory.Labels.TOP;
-				TradeMemory.save();
+				if (g == null) {
+					check("the cured villager is still there", false);
+					finish(client);
+					return;
+				}
+				if (since == 32) {
+					java.util.List<net.minecraft.text.Text> lines = TradeMemory.lines(client, g);
+					check("the villager's trades show over its head (" + lines.size() + " lines)", lines.size() >= 2);
+					check("…marked as traded once bought from", lines.stream().anyMatch(t -> t.getString().contains("locked")));
+					config.labelRange = 8;
+					boolean far = g.squaredDistanceTo(client.player) > 64;
+					check("…and not past the label distance you pick", far || TradeMemory.lines(client, g).size() == lines.size());
+					config.labelRange = 24;
+					config.labels = TradeMemory.Labels.TOP;
+					TradeMemory.save();
+					// Don't let me hit villagers: a sword hit, a sweep at a pig beside it, and a spear stab at a villager out in the
+					// open, 2.5 blocks off (a spear reaches 2 to 4.5).
+					config.protectVillagers = true;
+					command(client, "kill @e[tag=guard]");
+					command(client, "summon minecraft:villager -2.5 -60 22.0 {NoAI:1b,Tags:[\"guard\"]}");
+					command(client, "summon minecraft:pig -1.3 -60 21.3 {NoAI:1b,Tags:[\"guard\"]}");
+					command(client, "tp @p -2.5 -60 19.5 0 0");
+					// In an empty hotbar slot, so the axe the hall needs stays where it is.
+					var inv = client.player.getInventory();
+					handBefore = inv.getSelectedSlot();
+					guardSlot = 8;
+					for (int i = 0; i < 9; i++) if (inv.getStack(i).isEmpty()) guardSlot = i;
+					inv.setSelectedSlot(guardSlot);
+					command(client, "item replace entity @p hotbar." + guardSlot + " with minecraft:iron_sword");
+				}
+				VillagerEntity t = since >= 45 ? guardVillager(client) : null;
+				if (since >= 45 && since <= 90 && t == null) {
+					check("the villager to hit is there", false);
+					finish(client);
+					return;
+				}
+				if (since == 45) {
+					aimAt(client, t);
+					healthBefore = t.getHealth();
+					check("with Don't let me hit villagers, a sword hit is spotted as reaching it", VillagerGuard.attackHurtsVillager(client.player, t));
+					client.interactionManager.attackEntity(client.player, t);
+					var pig = client.world.getEntitiesByClass(net.minecraft.entity.passive.PigEntity.class, t.getBoundingBox().expand(3), e -> true).stream().findFirst().orElse(null);
+					check("…and so is a sword's sweep at a pig beside it", pig != null && VillagerGuard.attackHurtsVillager(client.player, pig));
+					if (pig != null) client.interactionManager.attackEntity(client.player, pig);
+					command(client, "item replace entity @p hotbar." + guardSlot + " with minecraft:iron_spear");
+				}
+				if (since == 60) {
+					aimAt(client, t);
+					check("…and so is a spear stab", VillagerGuard.stabHurtsVillager(client.player));
+					var spear = client.player.getMainHandStack().get(net.minecraft.component.DataComponentTypes.PIERCING_WEAPON);
+					if (spear != null) client.interactionManager.attackWithPiercingWeapon(spear);
+				}
+				if (since != 90) return;
+				check("…and neither lands (health " + t.getHealth() + " of " + healthBefore + ")", t.getHealth() >= healthBefore && t.hurtTime == 0);
+				config.protectVillagers = false;
+				command(client, "item replace entity @p hotbar." + guardSlot + " with minecraft:air");
+				client.player.getInventory().setSelectedSlot(handBefore);
+				command(client, "kill @e[tag=guard]");
 				if (Boolean.getBoolean("tradeseeker.selftest.cure")) {
 					finish(client);
 					return;
@@ -616,7 +684,7 @@ final class SelfTest {
 					ModConfig.load();
 					check("settings survive a restart", ModConfig.INSTANCE.autoBuy == before.autoBuy
 							&& ModConfig.INSTANCE.wanted.equals(before.wanted) && ModConfig.INSTANCE.secondsPerRoll == before.secondsPerRoll);
-					check("it learned its pace (" + ModConfig.INSTANCE.secondsPerRoll + " s per re-roll)", ModConfig.INSTANCE.secondsPerRoll != 3.0);
+					check("it learned its pace (" + ModConfig.INSTANCE.secondsPerRoll + " s per re-roll)", ModConfig.INSTANCE.secondsPerRoll != 9.99);
 					check("Auto learned how long villagers take the job (waits " + Reroller.jobWait() + " s, from " + ModConfig.INSTANCE.jobTakeTimes.size()
 							+ " takes)", ModConfig.INSTANCE.jobTakeTimes.size() >= 5 && Reroller.jobWait() >= 1.5 && Reroller.jobWait() < 5.5);
 					finish(client);
@@ -641,6 +709,18 @@ final class SelfTest {
 		check("a price range nobody asks can't happen", Odds.perRoll(38, 1, 1, true, 1, 1, 9) == 0);
 		// Unbreaking III's 35 equally likely prices run 11..45; 18 of them are 28 or less.
 		check("a price limit cuts the odds in proportion", Math.abs(Odds.priceChance(3, false, 1, 28) - 18 / 35.0) < 1e-9);
+		// Buying a trade out raises its price at the next restock (demand moves by uses − unused, × base × 0.2).
+		check("uncured, 6 of 12 books keep the price after a restock", Reroller.usesKeepingPrice(book(10, 0, 0), 0) == 6);
+		check("cured 1 emerald Mending (base 10): 8 keep it at 1", Reroller.usesKeepingPrice(book(10, 0, 0), Reroller.CURED_DISCOUNT) == 8);
+		check("cured base 21: 6 keep it at 1", Reroller.usesKeepingPrice(book(21, 0, 0), Reroller.CURED_DISCOUNT) == 6);
+		check("left alone a while (demand −12), all 12 do", Reroller.usesKeepingPrice(book(21, 0, -12), Reroller.CURED_DISCOUNT) == 12);
+		check("already bought 9: no more", Reroller.usesKeepingPrice(book(10, 9, 0), Reroller.CURED_DISCOUNT) == 9);
+	}
+
+	/** An enchanted book trade as librarians make them: 12 uses, multiplier 0.2. */
+	private static net.minecraft.village.TradeOffer book(int price, int uses, int demand) {
+		return new net.minecraft.village.TradeOffer(new net.minecraft.village.TradedItem(Items.EMERALD, price), java.util.Optional.of(new net.minecraft.village.TradedItem(Items.BOOK, 1)),
+				new ItemStack(Items.ENCHANTED_BOOK), uses, 12, 1, 0.2f, demand);
 	}
 
 	/** 1.0.0's settings (one level per book, one price range for all) carry over. */
@@ -718,7 +798,7 @@ final class SelfTest {
 
 	private static void watchForEscape(MinecraftClient client) {
 		for (Entity e : client.world.getEntities()) {
-			if (!(e instanceof VillagerEntity v)) continue;
+			if (!(e instanceof VillagerEntity v) || GUARD_AREA.contains(v.getEntityPos())) continue;
 			int x = MathHelper.floor(v.getX()), z = MathHelper.floor(v.getZ());
 			if (!escaped && (x != 2 || (z != A && z != B && z != C && z != D && z != E && z != G && (z < F || z > F + 2)))) {
 				escaped = true;
@@ -736,6 +816,11 @@ final class SelfTest {
 	}
 
 	/** The villager in the pod at that z. */
+	/** The villager the "don't let me hit villagers" checks swing at. */
+	private static VillagerEntity guardVillager(MinecraftClient client) {
+		return client.world.getEntitiesByClass(VillagerEntity.class, GUARD_AREA, v -> true).stream().findFirst().orElse(null);
+	}
+
 	private static VillagerEntity villager(MinecraftClient client, int pod) {
 		for (Entity e : client.world.getEntities()) {
 			if (!(e instanceof VillagerEntity v)) continue;

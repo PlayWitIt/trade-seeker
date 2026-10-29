@@ -38,7 +38,7 @@ there. A purchase plays a coin and a happy villager, and a finished list plays t
 - **Auto-buy** (off by default) buys it for you. Then it moves to the next untraded villager in reach for the books
   still wanted.
 - **Buy as many as I can afford** (off by default, needs auto-buy) keeps buying copies until you run out of
-  emeralds, books or space, or the villager runs out.
+  emeralds, books or space, or one more would raise the price at the next restock (usually after 6; see below).
 
 It never trades while re-rolling, because one trade locks a villager's offers for good. It refuses a villager that
 has already been traded with.
@@ -52,20 +52,22 @@ has already been traded with.
   - Speed: Fast, Normal, or Careful (for strict anticheats).
   - Turn to face the targets.
   - Stop if I get hurt (on by default).
-  - Don't let me hit villagers (off by default): your attacks on villagers do nothing, so a stray click can't cost a
-    cured villager's discount. Arrows, and sword sweeps at something else, can still reach them.
+  - Don't let me hit villagers (off by default): a hit that would reach a villager isn't sent (a sword or fist, a
+    sword's sweep at something next to one, a spear's stab), so a stray click can't cost a cured villager's discount.
+    Arrows, tridents and a spear's charge can still reach them.
   - Near-miss messages, sound, and a re-roll limit.
 - Keys: **J** opens the menu, even while it's running. "Start / stop re-rolling" can be bound in Controls.
 - Settings and the menu's tab and selection are kept in `config/tradeseeker.json`. 1.0.0 settings carry over.
 
 ## Trades over villagers' heads
 
-No more signs. Once a villager's trades have been opened (by you, or by a re-roll), they show over its head, up to
-24 blocks away and through glass, and they're remembered in `config/tradeseeker-trades.json` across restarts. Options,
+No more signs. Once a villager's trades have been opened (by you, or by a re-roll), they show over its head, even
+through walls like a name tag, and they're remembered in `config/tradeseeker-trades.json` across restarts. Options,
 **Labels** tab:
 
 - **Top books** (the default): books at their best level, in gold, and books on your wanted list, in green.
 - **All books**, **All trades**, or **Nothing**.
+- **Within**: 8, 16, 24 (the default) or 48 blocks, so a big hall isn't a wall of text.
 
 Book prices are what the villager keeps asking you: less a cure's 20, never under 1. A traded villager is marked
 "locked in". A villager that loses its job is forgotten (its next job brings new trades). **Forget all** clears them.
@@ -94,7 +96,16 @@ Every book it offers you costs less, and it keeps that discount through every re
 
 How often a cured villager's book is 1 emerald for good: any level I book (not Mending) always; Mending 2 in 5;
 Unbreaking III 11 in 35; Protection IV 8 in 45; Efficiency V or Sharpness V 1 in 11. Hitting the villager lowers
-its opinion of you for a while, so don't.
+its opinion of you for a while, so don't (Options: Don't let me hit villagers).
+
+Curing it again doesn't add more: both kinds of cure reputation are already at their cap after one cure.
+
+**Keep it at 1 emerald: don't buy a trade out.** A book trade sells 12 times, then waits for the villager to restock
+(at its job site, up to twice a day). Each restock moves the trade's demand by the number bought less the number left,
+and the price goes up by base × demand × 0.2. Buy all 12 copies of a base 10 Mending and it's 14 emeralds next
+time. Buy 6 or fewer per restock and the price never moves (with a cure, a few more: 8 for a base 10 book). Copies
+left unbought bring demand down, so a trade left alone a while can take a full buy-out. With **Buy as many as I can
+afford**, the mod stops at the most that keeps the price. Buying by hand, the status line tells you when to stop.
 
 ## When the villager won't take the lectern
 

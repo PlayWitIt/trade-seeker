@@ -7,6 +7,11 @@
 	"authors": [
 		"PlayWit Creations"
 	],
+	"contact": {
+		"homepage": "https://modrinth.com/mod/trade-seeker",
+		"sources": "https://github.com/PlayWitIt/trade-seeker",
+		"issues": "https://github.com/PlayWitIt/trade-seeker/issues"
+	},
 	"license": "MIT",
 	"environment": "client",
 	"entrypoints": {
