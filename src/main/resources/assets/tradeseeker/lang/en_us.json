@@ -270,6 +270,7 @@
 	"tradeseeker.status.bought_enough": "Bought %s: stop here, or it won't be %s after the next restock. Close the trade to move on.",
 	"tradeseeker.msg.buy_closed": "The trade screen closed before it could buy.",
 	"tradeseeker.msg.cant_afford": "Couldn't buy it: you need the emeralds and a book on you. The trade is still there; the screen is open.",
+	"tradeseeker.msg.buy_refused": "The server didn't hand the book over (it took it back 3 times), so nothing was bought or ticked off. The trade is still there.",
 	"tradeseeker.msg.inventory_full": "Your inventory is full, so there's nowhere to put the book. Make space and buy it from the open screen.",
 	"tradeseeker.msg.bought": "Bought %s. That librarian's trades are now locked in.",
 	"tradeseeker.msg.bought_many": "%s × %s",

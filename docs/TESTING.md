@@ -51,6 +51,13 @@ Read this when the user comes back with results from testing 1.5.0 in their own 
 6. **Hand-opened trades** are matched to a villager through `InteractionMixin.interactEntity`. Right-clicking a
    villager through another mod's UI might bypass it.
 
+## 1.5.3: purchases confirmed by the server
+
+A purchase counts (and unticks the book) only once the server's own copy of the trade screen says the book is
+yours: after the buy clicks, a no-op click with a stale revision (`Reroller.askForContents`) makes the server send the
+whole screen, in order after the purchase. A refused buy is retried twice, then it stops with `msg.buy_refused`. The
+cure test covers it (server clears the emeralds and lags 1 s at the moment of buying). Full self-test: 80/80.
+
 ## 1.5.1: demand (the user's goal is 1 emerald books)
 
 Price = base + max(0, floor(base × demand × 0.2)) + specialPrice, clamped ≥ 1. At each restock, demand += uses −

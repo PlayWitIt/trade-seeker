@@ -53,7 +53,8 @@ final class SelfTest {
 	private static boolean started, escaped, night;
 	private static int rollsAsleep, hurtChecked, settledAt;
 	private static float healthBefore;
-	private static int handBefore, guardSlot, boughtOutPrice;
+	private static int handBefore, guardSlot, boughtOutPrice, untickBefore;
+	private static boolean refusalDone;
 	private static Reroller.Book buyMaxBook;
 	private static Vec3d dropAt;
 	/** The hall's switch from villager A to B, which walks to B's lectern, happens with the pause menu up. */
@@ -568,6 +569,30 @@ final class SelfTest {
 			}
 			case "cured" -> {
 				if (since % 1200 == 0) log("cured: " + Reroller.rolls() + " re-rolls, state " + Reroller.stateName());
+				// The moment it buys, the server turns it down: the emeralds are gone there, and it's a second behind
+				// (lag), so the game shows the book bought for a while before the server takes it back.
+				if (!refusalDone && "BUY".equals(Reroller.stateName())) {
+					refusalDone = true;
+					untickBefore = config.wanted.size();
+					config.untickBought = true;
+					MinecraftServer server = client.getServer();
+					server.execute(() -> {
+						server.getCommandManager().parseAndExecute(server.getCommandSource(), "clear @a minecraft:emerald");
+						// And the ones already in the trade's payment slots.
+						var sp = server.getPlayerManager().getPlayerList().get(0);
+						if (sp.currentScreenHandler instanceof net.minecraft.screen.MerchantScreenHandler m) {
+							for (int s = 0; s < 2; s++) {
+								if (m.getSlot(s).getStack().isOf(Items.EMERALD)) m.getSlot(s).setStack(ItemStack.EMPTY);
+							}
+						}
+						try {
+							Thread.sleep(1000);
+						} catch (InterruptedException ignored) {
+						}
+					});
+					next("refused");
+					return;
+				}
 				if (Reroller.running() && since < 20 * 60 * 10) return;
 				// The payment slots' emeralds come back to the inventory a moment after the trade closes.
 				if (settledAt == 0) settledAt = since;
@@ -579,6 +604,27 @@ final class SelfTest {
 				if (Reroller.running()) Reroller.stop(client, null);
 				config.untickBought = true;
 				next("labels");
+			}
+			case "refused" -> {
+				if (Reroller.running() && since < 20 * 60) return;
+				if (settledAt == 0) settledAt = since;
+				if (since - settledAt < 30) return;
+				settledAt = 0;
+				check("a purchase the server turns down isn't counted (" + Reroller.bought().size() + " bought, " + xp(client, G) + " xp)",
+						Reroller.bought().isEmpty() && xp(client, G) == 0);
+				check("…nor ticked off the wanted list (" + config.wanted.size() + " of " + untickBefore + ")", config.wanted.size() == untickBefore);
+				check("…and it stopped, leaving the trade there", !Reroller.running());
+				if (client.currentScreen != null) client.player.closeHandledScreen();
+				config.untickBought = false;
+				// The emeralds back, and on with the real purchase from the same villager.
+				command(client, "give @p minecraft:emerald " + booksBefore);
+				next("cured_retry");
+			}
+			case "cured_retry" -> {
+				if (since != 30) return;
+				aimAt(client, villager(client, G));
+				Reroller.start(client);
+				next("cured");
 			}
 			case "labels" -> {
 				VillagerEntity g = villager(client, G);

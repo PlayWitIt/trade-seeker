@@ -52,7 +52,7 @@ import java.util.UUID;
  * A villager's trades only lock once someone trades with it, so it never trades unless told to.
  */
 public final class Reroller {
-	private enum State { OPEN, AWAIT_OFFERS, STEP, BREAK, WAIT_JOBLESS, PLACE, FETCH, RETURN, CONFIRM_PLACE, WAIT_JOB, BUY, DECIDE, WAIT_DAY }
+	private enum State { OPEN, AWAIT_OFFERS, STEP, BREAK, WAIT_JOBLESS, PLACE, FETCH, RETURN, CONFIRM_PLACE, WAIT_JOB, BUY, CONFIRM_BUY, DECIDE, WAIT_DAY }
 
 	/**
 	 * One enchanted book a librarian offers. price is what it settles at for good (what counts for a find); now is what
@@ -124,6 +124,30 @@ public final class Reroller {
 	private static final List<Seen> seen = new ArrayList<>();
 	private static final List<Book> bought = new ArrayList<>();
 	private static int boughtHere, booksAtFind;
+	/** Copies of the found book on you just before a purchase, and how many purchases in a row the server turned down. */
+	private static int haveBeforeBuy, refusedBuys;
+	/** Whole contents the server has sent for the trade screen, counted; and the count when a purchase was made. */
+	private static int contentsSent, contentsBeforeBuy;
+	/** No answer from the server in this long: the purchase is taken as not made (and tried again). */
+	private static final int BUY_ANSWER_TICKS = 200;
+
+	public static void serverSentContents(int syncId) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client.player != null && client.player.currentScreenHandler instanceof MerchantScreenHandler h && h.syncId == syncId) contentsSent++;
+	}
+
+	/**
+	 * Asks the server for the trade screen's whole contents, as it has them once it has handled the clicks before. A
+	 * click that does nothing (outside the window, nothing held) with an out-of-date revision makes the server send
+	 * them all, in order after the purchase, so what arrives is the server's own word on it.
+	 */
+	private static void askForContents(MinecraftClient client, MerchantScreenHandler handler) {
+		contentsBeforeBuy = contentsSent;
+		int staleRevision = (handler.getRevision() + 20000) & 32767;
+		client.getNetworkHandler().sendPacket(new net.minecraft.network.packet.c2s.play.ClickSlotC2SPacket(handler.syncId, staleRevision,
+				(short) -999, (byte) 0, SlotActionType.PICKUP, new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>(),
+				net.minecraft.screen.sync.ItemStackHash.EMPTY));
+	}
 	/** Buying stopped short so the price comes back the same at the next restock. */
 	private static boolean kept;
 	private static float lastHealth;
@@ -368,6 +392,7 @@ public final class Reroller {
 			case CONFIRM_PLACE -> confirmPlace(client, player);
 			case WAIT_JOB -> waitJob(client, player);
 			case BUY -> buy(client, player);
+			case CONFIRM_BUY -> confirmBuy(client, player);
 			case DECIDE -> decide(client, player);
 			case WAIT_DAY -> waitDay(client, player);
 		}
@@ -382,7 +407,7 @@ public final class Reroller {
 	private static boolean sleepCheck(MinecraftClient client, ClientPlayerEntity player) {
 		// Putting a broken lectern back doesn't involve the villager, so that still happens: it never sits out the night
 		// with an empty spot. Trading, breaking and waiting for the job all wait.
-		if (state == State.DECIDE || state == State.BUY || state == State.WAIT_JOBLESS || state == State.PLACE || state == State.CONFIRM_PLACE) {
+		if (state == State.DECIDE || state == State.BUY || state == State.CONFIRM_BUY || state == State.WAIT_JOBLESS || state == State.PLACE || state == State.CONFIRM_PLACE) {
 			return false;
 		}
 		// The lectern is gone (it broke just as the villager fell asleep): put it back first, then wait.
@@ -629,6 +654,7 @@ public final class Reroller {
 		SystemToast.show(client.getToastManager(), SystemToast.Type.PERIODIC_NOTIFICATION,
 				Text.translatable("tradeseeker.toast.found"), book.describe());
 		boughtHere = 0;
+		refusedBuys = 0;
 		kept = false;
 		if (ModConfig.INSTANCE.autoBuy) {
 			enter(State.BUY);
@@ -695,12 +721,44 @@ public final class Reroller {
 			return;
 		}
 		// A plain click takes exactly one; then it goes in a free slot (books don't stack).
+		haveBeforeBuy = copiesOf(player, found);
 		client.interactionManager.clickSlot(handler.syncId, 2, 0, SlotActionType.PICKUP, player);
 		client.interactionManager.clickSlot(handler.syncId, free, 0, SlotActionType.PICKUP, player);
+		// The game shows the book bought at once; the server can still refuse (an anticheat, a trade plugin, emeralds
+		// gone by the time the click arrives) and take it back. It only counts, and comes off your list, once the
+		// server's own copy of the screen says so.
+		// (The server's cursor is empty by now: the second click put the book down, or there was no book.)
+		askForContents(client, handler);
+		enter(State.CONFIRM_BUY);
+		delay = 0;
+	}
+
+	/** The book has had time to be taken back if the server refused the purchase: count it, or try again. */
+	private static void confirmBuy(MinecraftClient client, ClientPlayerEntity player) {
+		MerchantScreenHandler handler = trades(player);
+		// Until the server's answer is in (or a long while has gone by with none).
+		if (handler != null && contentsSent <= contentsBeforeBuy && ticksInState < BUY_ANSWER_TICKS) return;
+		if (copiesOf(player, found) <= haveBeforeBuy || handler != null && contentsSent <= contentsBeforeBuy) {
+			TradeSeekerClient.LOGGER.info("The server didn't hand over {} (try {})", found.describe().getString(), refusedBuys + 1);
+			if (handler != null && ++refusedBuys < 3) {
+				select(client, handler, found.index());
+				enter(State.BUY);
+				delay = Math.max(4, ModConfig.INSTANCE.speed.delay);
+				return;
+			}
+			if (boughtHere > 0) {
+				finishBuying(client, player);
+			} else {
+				// Nothing bought, nothing ticked off: the trade is still there.
+				stop(client, Text.translatable("tradeseeker.msg.buy_refused").formatted(Formatting.YELLOW));
+			}
+			return;
+		}
+		refusedBuys = 0;
 		boughtHere++;
 		bought.add(found);
 		logBought(found);
-		if (!ModConfig.INSTANCE.buyMax) {
+		if (!ModConfig.INSTANCE.buyMax || handler == null) {
 			finishBuying(client, player);
 			return;
 		}
@@ -714,7 +772,21 @@ public final class Reroller {
 		status(player, Text.translatable("tradeseeker.status.buying", boughtHere, found.describe()));
 		// Refill the payment slots from the inventory, as clicking the trade again would.
 		select(client, handler, found.index());
+		enter(State.BUY);
 		delay = Math.max(2, ModConfig.INSTANCE.speed.delay);
+	}
+
+	/** Enchanted books on you holding that book's enchantment at its level or higher. */
+	private static int copiesOf(ClientPlayerEntity player, Book book) {
+		int n = 0;
+		PlayerInventory inventory = player.getInventory();
+		for (int i = 0; i < inventory.size(); i++) {
+			ItemStack stack = inventory.getStack(i);
+			if (!stack.isOf(Items.ENCHANTED_BOOK)) continue;
+			var stored = stack.getOrDefault(net.minecraft.component.DataComponentTypes.STORED_ENCHANTMENTS, net.minecraft.component.type.ItemEnchantmentsComponent.DEFAULT);
+			if (stored.getLevel(book.enchantment()) >= book.level()) n += stack.getCount();
+		}
+		return n;
 	}
 
 	/**
