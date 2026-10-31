@@ -109,12 +109,33 @@ public final class ModConfig {
 	public int labelRange = 24;
 	/** Villagers (UUIDs) whose trades showed you cured them, oldest first, so the discount is known after a restart. */
 	public java.util.List<String> curedVillagers = new java.util.ArrayList<>();
+	/** Text sizes, in percent: the J menu, the labels over villagers, and the notice at the top of the screen. */
+	public int menuSize = 100;
+	public int labelSize = 100;
+	public int noticeSize = 100;
 	/** Seconds one re-roll takes, learned from past runs; for the time estimates. */
 	public double secondsPerRoll = 3.0;
 
 	// Menu state, so it opens as you left it.
 	public String focused = "minecraft:mending";
 	public String tab = "ALL";
+
+	/** The sizes to pick from, in percent. */
+	public static final int[] MENU_SIZES = {75, 100, 125, 150, 175, 200};
+	public static final int[] LABEL_SIZES = {50, 75, 100, 125, 150, 200, 250, 300};
+
+	/** A saved size, or 100 if it isn't one of {@code sizes} (an old or hand-edited file). */
+	private static int size(int value, int[] sizes) {
+		return java.util.Arrays.stream(sizes).anyMatch(s -> s == value) ? value : 100;
+	}
+
+	/** The next size up or down from {@code value}, as a stepper's − and + give it (±10; ±50 with Shift: the smallest or largest). */
+	public static int stepSize(int value, int[] sizes, int step) {
+		int i = 0;
+		while (i < sizes.length - 1 && sizes[i] < value) i++;
+		i += Math.abs(step) >= 50 ? Integer.signum(step) * sizes.length : Integer.signum(step);
+		return sizes[Math.max(0, Math.min(sizes.length - 1, i))];
+	}
 
 	public Want want(String id) {
 		return wanted.get(id);
@@ -135,6 +156,9 @@ public final class ModConfig {
 				if (loaded.labels == null) loaded.labels = TradeMemory.Labels.TOP;
 				if (java.util.Arrays.stream(TradeMemory.RANGES).noneMatch(r -> r == loaded.labelRange)) loaded.labelRange = 24;
 				loaded.volume = Math.max(0, Math.min(100, loaded.volume));
+				loaded.menuSize = size(loaded.menuSize, MENU_SIZES);
+				loaded.labelSize = size(loaded.labelSize, LABEL_SIZES);
+				loaded.noticeSize = size(loaded.noticeSize, MENU_SIZES);
 				if (!(loaded.jobWait == 0 || loaded.jobWait >= 0.5 && loaded.jobWait <= 30)) loaded.jobWait = 0;
 				if (loaded.jobTakeTimes == null) loaded.jobTakeTimes = new java.util.ArrayList<>();
 				if (loaded.curedVillagers == null) loaded.curedVillagers = new java.util.ArrayList<>();

@@ -98,14 +98,38 @@ public final class SeekerScreen extends Screen {
 	// Where the price slider was drawn, for dragging.
 	private int sliderX0, sliderX1;
 
+	/** Opened from Mod Menu: just the options, and Done goes back there. */
+	private final Screen parent;
+	private final boolean settingsOnly;
+	/** The menu size (Options → Text): everything here is drawn this much bigger or smaller, in its own units. */
+	private float scale = 1;
+
 	public SeekerScreen() {
+		this(null, false);
+	}
+
+	private SeekerScreen(Screen parent, boolean settingsOnly) {
 		super(Text.translatable("tradeseeker.title"));
+		this.parent = parent;
+		this.settingsOnly = settingsOnly;
+		options = settingsOnly;
+	}
+
+	/** The options on their own, for Mod Menu's Config button. */
+	public static SeekerScreen settings(Screen parent) {
+		return new SeekerScreen(parent, true);
 	}
 
 	// ---- Setup ----
 
 	@Override
 	protected void init() {
+		// The menu size, as far as the screen allows (the layout needs 320 × 240).
+		int realW = client.getWindow().getScaledWidth(), realH = client.getWindow().getScaledHeight();
+		float want = ModConfig.INSTANCE.menuSize / 100f;
+		scale = want <= 1 ? want : Math.max(1, Math.min(want, Math.min(realW / 320f, realH / 240f)));
+		width = (int) (realW / scale);
+		height = (int) (realH / scale);
 		loadChoices();
 		ModConfig config = ModConfig.INSTANCE;
 		try {
@@ -265,7 +289,11 @@ public final class SeekerScreen extends Screen {
 	// ---- Drawing ----
 
 	@Override
-	public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
+	public void renderBackground(DrawContext context, int realX, int realY, float delta) {
+		// Drawn before render(), on its own: scaled to the menu size here too.
+		int mouseX = (int) (realX / scale), mouseY = (int) (realY / scale);
+		context.getMatrices().pushMatrix();
+		context.getMatrices().scale(scale, scale);
 		super.renderBackground(context, mouseX, mouseY, delta);
 		hits.clear();
 		if (++checksAge > 20) refreshChecks();
@@ -273,17 +301,45 @@ public final class SeekerScreen extends Screen {
 		drawList(context, mouseX, mouseY);
 		drawDetails(context, mouseX, mouseY);
 		drawFooter(context, mouseX, mouseY);
+		context.getMatrices().popMatrix();
 	}
 
 	@Override
-	public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+	public void render(DrawContext context, int realX, int realY, float delta) {
+		int mouseX = (int) (realX / scale), mouseY = (int) (realY / scale);
+		context.getMatrices().pushMatrix();
+		context.getMatrices().scale(scale, scale);
 		super.render(context, mouseX, mouseY, delta);
 		if (options) drawOptions(context, mouseX, mouseY);
+		context.getMatrices().popMatrix();
+		// Tooltips are drawn last, outside the scaling: at the mouse, their usual size.
 		Hit hover = hitAt(mouseX, mouseY);
 		if (hover != null && hover.tooltip != null) {
 			List<Text> lines = hover.tooltip.get();
-			if (lines != null && !lines.isEmpty()) context.drawTooltip(textRenderer, lines, mouseX, mouseY);
+			if (lines != null && !lines.isEmpty()) context.drawTooltip(textRenderer, lines, realX, realY);
 		}
+	}
+
+	/** A click where the mouse is in this screen's (scaled) units. */
+	private Click scaled(Click click) {
+		return scale == 1 ? click : new Click(click.x() / scale, click.y() / scale, click.buttonInfo());
+	}
+
+	@Override
+	public void mouseMoved(double mouseX, double mouseY) {
+		super.mouseMoved(mouseX / scale, mouseY / scale);
+	}
+
+	/** Leaves the options: back to the menu, or to Mod Menu if that's where they were opened from. */
+	private void closeOptions() {
+		if (settingsOnly) close();
+		else options = false;
+	}
+
+	@Override
+	public void close() {
+		if (parent != null) client.setScreen(parent);
+		else super.close();
 	}
 
 	private void drawHeader(DrawContext context) {
@@ -846,6 +902,34 @@ public final class SeekerScreen extends Screen {
 		hit(fx0, y - 1, fx1, y + 12, TradeMemory::forgetAll, () -> List.of(Text.translatable("tradeseeker.labels.forget.tip")));
 	}
 
+	private void drawTextOptions(DrawContext context, int x, int y, int x1, int mouseX, int mouseY) {
+		ModConfig config = ModConfig.INSTANCE;
+		context.drawText(textRenderer, Text.translatable("tradeseeker.opt.menu_size"), x, y + 4, TEXT, false);
+		stepper(context, x1 - 10 - 84, y, x1 - 10, Text.literal(config.menuSize + "%"), mouseX, mouseY, step -> {
+			config.menuSize = ModConfig.stepSize(config.menuSize, ModConfig.MENU_SIZES, step);
+			ModConfig.save();
+			// Laid out again at the new size.
+			clearAndInit();
+		}, "tradeseeker.opt.menu_size.tip");
+		y += 22;
+		context.drawText(textRenderer, Text.translatable("tradeseeker.opt.label_size"), x, y + 4, TEXT, false);
+		stepper(context, x1 - 10 - 84, y, x1 - 10, Text.literal(config.labelSize + "%"), mouseX, mouseY, step -> {
+			config.labelSize = ModConfig.stepSize(config.labelSize, ModConfig.LABEL_SIZES, step);
+			ModConfig.save();
+		}, "tradeseeker.opt.label_size.tip");
+		y += 22;
+		context.drawText(textRenderer, Text.translatable("tradeseeker.opt.notice_size"), x, y + 4, TEXT, false);
+		stepper(context, x1 - 10 - 84, y, x1 - 10, Text.literal(config.noticeSize + "%"), mouseX, mouseY, step -> {
+			config.noticeSize = ModConfig.stepSize(config.noticeSize, ModConfig.MENU_SIZES, step);
+			ModConfig.save();
+		}, "tradeseeker.opt.notice_size.tip");
+		y += 24;
+		if (scale < config.menuSize / 100f) {
+			y = drawWrapped(context, Text.translatable("tradeseeker.opt.menu_size.capped", Math.round(scale * 100)), x, y, x1 - 10 - x, MUTED) + 4;
+		}
+		drawWrapped(context, Text.translatable("tradeseeker.opt.text.about"), x, y, x1 - 10 - x, DIM);
+	}
+
 	// ---- Options (a small panel over the screen) ----
 
 	/** Options, in two tabs so the panel fits the smallest GUI (240 high). */
@@ -857,7 +941,7 @@ public final class SeekerScreen extends Screen {
 		int w = Math.min(260, width - 20), h = 222;
 		int x0 = (width - w) / 2, y0 = (height - h) / 2, x1 = x0 + w;
 		// Clicks outside close it.
-		hit(0, 0, width, height, () -> options = false, null);
+		hit(0, 0, width, height, this::closeOptions, null);
 		context.fill(x0, y0, x1, y0 + h, 0xFF15151C);
 		context.drawStrokedRectangle(x0, y0, w, h, 0xFF4A4A5A);
 		context.fill(x0 + 1, y0 + 1, x1 - 1, y0 + 18, HEADER);
@@ -866,7 +950,7 @@ public final class SeekerScreen extends Screen {
 
 		// Tabs.
 		int tx = x0 + 6, ty = y0 + 22;
-		String[] optionTabs = {"tradeseeker.options.behaviour", "tradeseeker.options.sounds", "tradeseeker.options.labels"};
+		String[] optionTabs = {"tradeseeker.options.behaviour", "tradeseeker.options.sounds", "tradeseeker.options.labels", "tradeseeker.options.text"};
 		for (int i = 0; i < optionTabs.length; i++) {
 			int which = i;
 			Text label = Text.translatable(optionTabs[i]);
@@ -938,6 +1022,8 @@ public final class SeekerScreen extends Screen {
 			}, () -> lines("tradeseeker.opt.protect.tip", 2));
 		} else if (optionsTab == 2) {
 			drawLabelOptions(context, x, y, x1, mouseX, mouseY);
+		} else if (optionsTab == 3) {
+			drawTextOptions(context, x, y, x1, mouseX, mouseY);
 		} else {
 			// The find sound: click one to hear it.
 			context.drawText(font, Text.translatable("tradeseeker.opt.sound"), x, y + 4, TEXT, false);
@@ -976,12 +1062,7 @@ public final class SeekerScreen extends Screen {
 			y += 18;
 			drawWrapped(context, Text.translatable("tradeseeker.sound.about"), x, y, x1 - x0 - 20, DIM);
 		}
-		button(context, x1 - 70, y0 + h - 24, 60, Text.translatable("gui.done"), MUTED, true, false, mouseX, mouseY, () -> options = false, null);
-		Hit hover = hitAt(mouseX, mouseY);
-		if (hover != null && hover.tooltip != null) {
-			List<Text> lines = hover.tooltip.get();
-			if (lines != null && !lines.isEmpty()) context.drawTooltip(font, lines, mouseX, mouseY);
-		}
+		button(context, x1 - 70, y0 + h - 24, 60, Text.translatable("gui.done"), MUTED, true, false, mouseX, mouseY, this::closeOptions, null);
 	}
 
 	private interface Step {
@@ -1158,6 +1239,7 @@ public final class SeekerScreen extends Screen {
 
 	@Override
 	public boolean mouseClicked(Click click, boolean doubled) {
+		click = scaled(click);
 		double mx = click.x(), my = click.y();
 		if (options) {
 			Hit hit = hitAt(mx, my);
@@ -1201,6 +1283,9 @@ public final class SeekerScreen extends Screen {
 
 	@Override
 	public boolean mouseDragged(Click click, double dx, double dy) {
+		click = scaled(click);
+		dx /= scale;
+		dy /= scale;
 		if (drag != Drag.NONE && focused != null) {
 			dragTo(click.x());
 			return true;
@@ -1210,6 +1295,7 @@ public final class SeekerScreen extends Screen {
 
 	@Override
 	public boolean mouseReleased(Click click) {
+		click = scaled(click);
 		if (drag != Drag.NONE) {
 			drag = Drag.NONE;
 			changed();
@@ -1220,6 +1306,8 @@ public final class SeekerScreen extends Screen {
 
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+		mouseX /= scale;
+		mouseY /= scale;
 		if (options) return true;
 		// Over the slider: nudge the nearer handle by one emerald (five with Shift).
 		if (focused != null && mouseX >= sliderX0 - 4 && mouseX <= sliderX1 + 4 && sliderHit(mouseY)) {
@@ -1240,7 +1328,7 @@ public final class SeekerScreen extends Screen {
 		int key = input.key();
 		if (options) {
 			if (key == GLFW.GLFW_KEY_ESCAPE) {
-				options = false;
+				closeOptions();
 				return true;
 			}
 			return true;
@@ -1290,5 +1378,31 @@ public final class SeekerScreen extends Screen {
 
 	void testOptionsTab(int which) {
 		optionsTab = which;
+	}
+
+	boolean testOptionsOpen() {
+		return options;
+	}
+
+	float testScale() {
+		return scale;
+	}
+
+	/** Clicks the screen at a point in its own units, as a real click there would. */
+	void testClickAt(double x, double y) {
+		mouseClicked(new Click(x * scale, y * scale, new net.minecraft.client.input.MouseInput(0, 0)), false);
+	}
+
+	/** Where the {@code nth} hit with this tooltip key was drawn last frame (a stepper's − is 0, its + is 1), as its
+	 * middle in the screen's own units; null if none. */
+	double[] testHitFor(String tipKey, int nth) {
+		for (Hit h : hits) {
+			if (h.tooltip == null || h.click == null) continue;
+			List<Text> tip = h.tooltip.get();
+			if (tip != null && !tip.isEmpty() && tip.get(0).getContent() instanceof net.minecraft.text.TranslatableTextContent t && t.getKey().equals(tipKey)) {
+				if (nth-- == 0) return new double[] {(h.x0 + h.x1) / 2.0, (h.y0 + h.y1) / 2.0};
+			}
+		}
+		return null;
 	}
 }

@@ -1,5 +1,6 @@
 package com.greysworkshop.tradeseeker.mixin;
 
+import com.greysworkshop.tradeseeker.ModConfig;
 import com.greysworkshop.tradeseeker.TradeLabelHolder;
 import com.greysworkshop.tradeseeker.TradeMemory;
 import net.minecraft.client.MinecraftClient;
@@ -12,6 +13,7 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityAttachmentType;
 import net.minecraft.entity.passive.VillagerEntity;
 import net.minecraft.text.Text;
+import net.minecraft.util.math.Vec3d;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -38,11 +40,20 @@ public abstract class EntityRendererMixin {
 		TradeLabelHolder holder = (TradeLabelHolder) state;
 		List<Text> lines = holder.tradeseeker$lines();
 		if (lines.isEmpty() || holder.tradeseeker$labelPos() == null) return;
-		// Bottom line just above the name (or where the name would be); the others stacked up from there.
-		int bottom = state.displayName != null ? -10 : 0;
+		// At the label size (Options → Text), grown or shrunk around the point over its head.
+		float scale = ModConfig.INSTANCE.labelSize / 100f;
+		Vec3d pos = holder.tradeseeker$labelPos();
+		matrices.push();
+		// (Labels are drawn half a block above the point.)
+		matrices.translate(pos.x, pos.y + 0.5, pos.z);
+		matrices.scale(scale, scale, scale);
+		matrices.translate(-pos.x, -pos.y - 0.5, -pos.z);
+		// Bottom line just above the name (or where the name would be, which stays its own size); the others stacked up from there.
+		int bottom = state.displayName != null ? -Math.round(10 / scale) : 0;
 		for (int i = 0; i < lines.size(); i++) {
 			int y = bottom - (lines.size() - 1 - i) * 10;
-			queue.submitLabel(matrices, holder.tradeseeker$labelPos(), y, lines.get(i), true, state.light, state.squaredDistanceToCamera, camera);
+			queue.submitLabel(matrices, pos, y, lines.get(i), true, state.light, state.squaredDistanceToCamera, camera);
 		}
+		matrices.pop();
 	}
 }

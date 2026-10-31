@@ -17,6 +17,9 @@
 	"entrypoints": {
 		"client": [
 			"com.greysworkshop.tradeseeker.TradeSeekerClient"
+		],
+		"modmenu": [
+			"com.greysworkshop.tradeseeker.ModMenuIntegration"
 		]
 	},
 	"depends": {

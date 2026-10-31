@@ -56,6 +56,10 @@ has already been traded with.
     sword's sweep at something next to one, a spear's stab), so a stray click can't cost a cured villager's discount.
     Arrows, tridents and a spear's charge can still reach them.
   - Near-miss messages, sound, and a re-roll limit.
+  - **Text** tab: the size of the menu (75% to 200%; capped at what your screen fits), of the labels over villagers
+    (50% to 300%), and of the notice at the top of the screen (75% to 200%). Shift-click − or + to jump to the
+    smallest or largest.
+- With [Mod Menu](https://modrinth.com/mod/modmenu) installed, its **Config** button opens the same options.
 - Keys: **J** opens the menu, even while it's running. "Start / stop re-rolling" can be bound in Controls.
 - Settings and the menu's tab and selection are kept in `config/tradeseeker.json`. 1.0.0 settings carry over.
 

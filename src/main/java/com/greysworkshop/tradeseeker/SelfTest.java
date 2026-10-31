@@ -52,6 +52,8 @@ final class SelfTest {
 
 	private static boolean started, escaped, night;
 	private static int rollsAsleep, hurtChecked, settledAt;
+	private static int guiScaleBefore;
+	private static net.minecraft.client.gui.screen.Screen modMenuParent;
 	private static float healthBefore;
 	private static int handBefore, guardSlot, boughtOutPrice, untickBefore;
 	private static boolean refusalDone;
@@ -143,7 +145,7 @@ final class SelfTest {
 					client.setScreen(new SeekerScreen());
 				}
 				if (tick == 145 && client.currentScreen instanceof SeekerScreen s) s.testFocus("minecraft:unbreaking");
-				if (tick % 5 == 0 && tick < 245) client.getToastManager().clear();
+				if (tick % 5 == 0 && tick < 385) client.getToastManager().clear();
 				if (tick == 160) screenshot(client, "1_menu_all");
 				if (tick == 162 && client.currentScreen instanceof SeekerScreen s) {
 					s.testTab("PICKED");
@@ -156,12 +158,52 @@ final class SelfTest {
 				if (tick == 225) screenshot(client, "1d_menu_options_sounds");
 				if (tick == 227 && client.currentScreen instanceof SeekerScreen s) s.testOptionsTab(2);
 				if (tick == 238) screenshot(client, "1e_menu_options_labels");
-				if (tick == 240 && client.currentScreen instanceof SeekerScreen s) {
+				// Text sizes: the stepper clicks land, at the normal size and at a bigger menu (GUI scale 1, so it fits).
+				if (tick == 240 && client.currentScreen instanceof SeekerScreen s) s.testOptionsTab(3);
+				if (tick == 250 && client.currentScreen instanceof SeekerScreen s) {
+					screenshot(client, "1f_menu_options_text");
+					click(s, "tradeseeker.opt.label_size.tip", 1);
+					check("Text: + makes the labels over villagers bigger (" + config.labelSize + "%)", config.labelSize == 125);
+					click(s, "tradeseeker.opt.label_size.tip", 0);
+					check("…and − smaller again (" + config.labelSize + "%)", config.labelSize == 100);
+					guiScaleBefore = client.options.getGuiScale().getValue();
+					client.options.getGuiScale().setValue(1);
+					client.onResolutionChanged();
+				}
+				if ((tick == 256 || tick == 266) && client.currentScreen instanceof SeekerScreen s) click(s, "tradeseeker.opt.menu_size.tip", 1);
+				// The menu under the options is that size too: its Options button, clicked where it's drawn, opens them again.
+				if (tick == 276 && client.currentScreen instanceof SeekerScreen s) s.testOptions(false);
+				if (tick == 286 && client.currentScreen instanceof SeekerScreen s) click(s, "tradeseeker.options.tip", 0);
+				if (tick == 296 && client.currentScreen instanceof SeekerScreen s) {
+					check("+ twice makes the menu 150% (" + config.menuSize + "%, drawn at " + s.testScale() + ")", config.menuSize == 150 && s.testScale() == 1.5f);
+					check("…the whole menu: a click on its Options button lands", s.testOptionsOpen());
+					screenshot(client, "1g_menu_options_150");
+				}
+				// At 150%, a click on − still lands on −.
+				if (tick == 304 && client.currentScreen instanceof SeekerScreen s) click(s, "tradeseeker.opt.menu_size.tip", 0);
+				if (tick == 316 && client.currentScreen instanceof SeekerScreen s) {
+					check("…and at that size, a click on − lands (" + config.menuSize + "%, drawn at " + s.testScale() + ")", config.menuSize == 125 && s.testScale() == 1.25f);
+					config.menuSize = 100;
+					client.options.getGuiScale().setValue(guiScaleBefore);
+					client.onResolutionChanged();
+				}
+				if (tick == 324 && client.currentScreen instanceof SeekerScreen s) {
+					check("back at 100%, the menu is its usual size (" + s.testScale() + ")", s.testScale() == 1f);
 					s.testOptionsTab(0);
 					s.testOptions(false);
+					// Mod Menu's Config button: the options on their own, and Esc (or Done) goes back to Mod Menu.
+					modMenuParent = new net.minecraft.client.gui.screen.GameMenuScreen(true);
+					client.setScreen(new ModMenuIntegration().getModConfigScreenFactory().create(modMenuParent));
+				}
+				if (tick == 334) {
+					screenshot(client, "1h_mod_menu_config");
+					check("Mod Menu's Config button opens the options", client.currentScreen instanceof SeekerScreen s && s.testOptionsOpen());
+					if (client.currentScreen != null) client.currentScreen.keyPressed(new net.minecraft.client.input.KeyInput(org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE, 0, 0));
+					check("…and Esc goes back to where it was opened from", client.currentScreen == modMenuParent);
+					client.setScreen(new SeekerScreen());
 				}
 				// -Dtradeseeker.selftest.menu=true: just the menu screenshots, for quick looks at the layout.
-				if (tick == 245) {
+				if (tick == 385) {
 					client.setScreen(null);
 					// Stop when hurt: start on a book that hardly ever turns up, then take a little damage.
 					wantRare();
@@ -169,14 +211,14 @@ final class SelfTest {
 					Reroller.start(client);
 					check("re-rolling starts on the villager you look at", Reroller.running() && Reroller.target() == villager(client, A));
 				}
-				if (tick == 290) command(client, "damage @p 1 minecraft:generic");
+				if (tick == 430) command(client, "damage @p 1 minecraft:generic");
 				// The server may run the command a little late: give it up to 3 s.
-				if (tick > 290 && tick <= 350 && hurtChecked == 0 && (!Reroller.running() || tick == 350)) {
+				if (tick > 430 && tick <= 490 && hurtChecked == 0 && (!Reroller.running() || tick == 490)) {
 					hurtChecked = tick;
 					check("it stops when you get hurt", !Reroller.running());
 					command(client, "effect give @p minecraft:instant_health 1 1");
 				}
-				if (tick == 370) {
+				if (tick == 510) {
 					wantRare();
 					config.maxRolls = 3;
 					// The shortest wait for the job you can set.
@@ -469,6 +511,9 @@ final class SelfTest {
 			}
 			case "night_asleep" -> {
 				if (since == 40) screenshot(client, "5_night_notice");
+				if (since == 44) config.noticeSize = 150;
+				if (since == 50) screenshot(client, "5b_night_notice_150");
+				if (since == 52) config.noticeSize = 100;
 				if (since == 60) rollsAsleep = Reroller.rolls();
 				if (since == 200) {
 					check("with only a sleeping villager, it waits (" + (Reroller.rolls() - rollsAsleep) + " re-rolls, lectern "
@@ -634,13 +679,16 @@ final class SelfTest {
 					client.player.setPitch(0);
 					client.player.setYaw(-90);
 				}
-				if (since == 30) screenshot(client, "6_labels_over_villager");
+				if (since == 2) config.labelSize = 200;
+				if (since == 20) screenshot(client, "6a_labels_over_villager_200");
+				if (since == 22) config.labelSize = 100;
+				if (since == 40) screenshot(client, "6_labels_over_villager");
 				if (g == null) {
 					check("the cured villager is still there", false);
 					finish(client);
 					return;
 				}
-				if (since == 32) {
+				if (since == 42) {
 					java.util.List<net.minecraft.text.Text> lines = TradeMemory.lines(client, g);
 					check("the villager's trades show over its head (" + lines.size() + " lines)", lines.size() >= 2);
 					check("…marked as traded once bought from", lines.stream().anyMatch(t -> t.getString().contains("locked")));
@@ -665,13 +713,14 @@ final class SelfTest {
 					inv.setSelectedSlot(guardSlot);
 					command(client, "item replace entity @p hotbar." + guardSlot + " with minecraft:iron_sword");
 				}
-				VillagerEntity t = since >= 45 ? guardVillager(client) : null;
-				if (since >= 45 && since <= 90 && t == null) {
+				VillagerEntity t = since >= 65 ? guardVillager(client) : null;
+				if (since >= 65 && since <= 110 && t == null) {
 					check("the villager to hit is there", false);
 					finish(client);
 					return;
 				}
-				if (since == 45) {
+				// 23 ticks after the sword is given: it must be fully charged (12.5 ticks) for a sweep, and the server may hand it over late.
+				if (since == 65) {
 					aimAt(client, t);
 					healthBefore = t.getHealth();
 					check("with Don't let me hit villagers, a sword hit is spotted as reaching it", VillagerGuard.attackHurtsVillager(client.player, t));
@@ -681,13 +730,13 @@ final class SelfTest {
 					if (pig != null) client.interactionManager.attackEntity(client.player, pig);
 					command(client, "item replace entity @p hotbar." + guardSlot + " with minecraft:iron_spear");
 				}
-				if (since == 60) {
+				if (since == 80) {
 					aimAt(client, t);
 					check("…and so is a spear stab", VillagerGuard.stabHurtsVillager(client.player));
 					var spear = client.player.getMainHandStack().get(net.minecraft.component.DataComponentTypes.PIERCING_WEAPON);
 					if (spear != null) client.interactionManager.attackWithPiercingWeapon(spear);
 				}
-				if (since != 90) return;
+				if (since != 110) return;
 				check("…and neither lands (health " + t.getHealth() + " of " + healthBefore + ")", t.getHealth() >= healthBefore && t.hurtTime == 0);
 				config.protectVillagers = false;
 				command(client, "item replace entity @p hotbar." + guardSlot + " with minecraft:air");
@@ -999,6 +1048,13 @@ final class SelfTest {
 		log("RESULT " + passed + " passed, " + failed + " failed");
 		next("done");
 		client.scheduleStop();
+	}
+
+	/** Clicks the {@code nth} control with this tooltip in the menu, where it was drawn. */
+	private static void click(SeekerScreen screen, String tipKey, int nth) {
+		double[] at = screen.testHitFor(tipKey, nth);
+		if (at == null) check("the control with tip " + tipKey + " is on screen", false);
+		else screen.testClickAt(at[0], at[1]);
 	}
 
 	private static void screenshot(MinecraftClient client, String name) {
